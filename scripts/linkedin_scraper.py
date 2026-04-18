@@ -4,6 +4,8 @@ import random
 import time
 import argparse
 from dotenv import load_dotenv
+import re
+import urllib.parse
 from playwright.sync_api import sync_playwright
 from datetime import datetime
 
@@ -16,6 +18,33 @@ PASSWORD = os.getenv("LINKEDIN_PASSWORD")
 SESSION_FILE = os.path.join(BASE_DIR, 'data', 'linkedin_session.json')
 JOBS_FILE = os.path.join(BASE_DIR, 'data', 'jobs.json')
 SEEN_JOBS_FILE = os.path.join(BASE_DIR, 'data', 'seen_jobs.json')
+
+def is_title_relevant(title):
+    title_lower = title.lower()
+    
+    # Negative Keywords (Seniority & Unrelated Domains)
+    red_flags = [
+        r'\bdirector\b', r'\bmanager\b', r'\bvp\b', r'\blead\b', r'\bhead\b', r'\bprincipal\b',
+        r'\bfrontend\b', r'\bfront-end\b', r'\bui\b', r'\bux\b', r'\bios\b', r'\bandroid\b',
+        r'\bmobile\b', r'\breact\b', r'\bangular\b', r'\bfull stack\b', r'\bfull-stack\b',
+        r'\bqa\b', r'\btest\b', r'\bsupport\b'
+    ]
+    
+    for pattern in red_flags:
+        if re.search(pattern, title_lower):
+            return False
+            
+    # Positive Keywords (Broad safety net to ensure we don't miss good jobs)
+    green_flags = [
+        'data', 'etl', 'elt', 'aws', 'cloud', 'backend', 'back-end',
+        'pipeline', 'spark', 'pyspark', 'analytics', 'infrastructure', 'platform', 
+        'python', 'sql', 'database', 'glue', 'lambda', 'redshift', 'rds',
+        'warehouse', 'airflow', 'big data', 'bigdata'
+    ]
+    if any(flag in title_lower for flag in green_flags):
+        return True
+        
+    return False
 
 def human_delay(min_sec=1.5, max_sec=4.5):
     time.sleep(random.uniform(min_sec, max_sec))
@@ -43,18 +72,30 @@ def load_seen_jobs():
     return {}
 
 def slow_scroll(page, scrolls=10):
+    try:
+        page.wait_for_selector(".jobs-search-results-list", timeout=5000)
+    except:
+        pass
+        
     for i in range(scrolls):
         dismiss_login_popup(page)
-        scroll_amount = random.randint(300, 600)
-        page.evaluate(f"window.scrollBy(0, {scroll_amount})")
-        time.sleep(random.uniform(1.0, 2.5))
-    return page.query_selector_all(".job-card-container")
+        page.evaluate("""() => {
+            const container = document.querySelector('.jobs-search-results-list') || document.documentElement;
+            if (container) container.scrollBy(0, 800);
+            
+            const cards = document.querySelectorAll('.job-card-container');
+            if (cards.length > 0) cards[cards.length - 1].scrollIntoView();
+        }""")
+        time.sleep(random.uniform(1.5, 2.5))
 
 def scrape_linkedin_jobs(keyword, location, max_pages, max_jobs):
     seen_jobs = load_seen_jobs()
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
-        context = browser.new_context(user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+        context = browser.new_context(
+            viewport={'width': 1440, 'height': 900}, # Force desktop layout
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        )
         
         if os.path.exists(SESSION_FILE):
             with open(SESSION_FILE, "r") as f:
@@ -81,46 +122,85 @@ def scrape_linkedin_jobs(keyword, location, max_pages, max_jobs):
             if len(all_jobs) >= max_jobs: break
             
             start = page_num * 25
-            url = f"https://www.linkedin.com/jobs/search/?keywords={keyword}&location={location}&f_AL=true&start={start}"
+            encoded_keyword = urllib.parse.quote(f'"{keyword}"')
+            url = f"https://www.linkedin.com/jobs/search/?keywords={encoded_keyword}&location={location}&f_AL=true&f_TPR=r259200&sortBy=DD&start={start}"
             print(f"📄 Scraping Page {page_num + 1}...")
             
             safe_goto(page, url)
             human_delay(3, 5)
-            job_cards = slow_scroll(page)
+            slow_scroll(page)
             
-            for card in job_cards:
+            cards = page.locator(".job-card-container")
+            card_count = cards.count()
+            print(f"    🔍 Found {card_count} job cards on this page.")
+            
+            for i in range(card_count):
                 if len(all_jobs) >= max_jobs: break
                 try:
-                    title_el = card.query_selector(".job-card-list__title--link span[aria-hidden='true']")
-                    if not title_el: continue
-                    title = title_el.inner_text().strip()
+                    card = cards.nth(i)
                     
-                    subtitle = card.query_selector(".artdeco-entity-lockup__subtitle")
-                    company = subtitle.inner_text().strip() if subtitle else "Unknown"
+                    title_el = card.locator(".job-card-list__title--link").first
+                    if not title_el.is_visible(): continue
+                    title = title_el.inner_text().split('\n')[0].strip()
                     
-                    link_el = card.query_selector(".job-card-list__title--link")
-                    href = link_el.get_attribute("href")
+                    if not is_title_relevant(title):
+                        print(f"  ⏭️ Skipped (Irrelevant Title): {title}")
+                        continue
+                        
+                    subtitle = card.locator(".artdeco-entity-lockup__subtitle").first
+                    company = subtitle.inner_text().split('\n')[0].strip() if subtitle.is_visible() else "Unknown"
+                    
+                    href = title_el.get_attribute("href")
+                    if not href: continue
                     job_url = "https://www.linkedin.com" + href.split("?")[0]
 
-                    if job_url in seen_jobs: continue
+                    if job_url in seen_jobs:
+                        print(f"  ⏭️ Skipped: Already seen {title} at {company}")
+                        continue
                     
+                    card.scroll_into_view_if_needed()
                     card.click()
                     human_delay(2, 4)
                     
                     # Wait specifically for the description to appear
-                    page.wait_for_selector(".jobs-description", timeout=10000)
-                    description = page.query_selector(".jobs-description").inner_text().strip()
+                    desc_locator = page.locator(".jobs-description")
+                    desc_locator.wait_for(timeout=10000)
+                    description = desc_locator.inner_text().strip()
                     
+                    # Extract applicant count safely
+                    applicants = "Unknown"
+                    try:
+                        app_locator = page.get_by_text(re.compile(r'(?:over\s+)?[\d,]+\s*applicants?', re.IGNORECASE)).first
+                        if app_locator.is_visible(timeout=2000):
+                            applicants = app_locator.inner_text().strip()
+                    except: pass
+                    
+                    # Drop job if > 100 applicants
+                    skip_job = False
+                    if applicants != "Unknown":
+                        if "over 100" in applicants.lower():
+                            skip_job = True
+                        else:
+                            num_match = re.search(r'\d+', applicants.replace(',', ''))
+                            if num_match and int(num_match.group()) > 100:
+                                skip_job = True
+                    if skip_job:
+                        print(f"  ⏭️ Skipped: Too many applicants ({applicants})")
+                        continue
+
                     all_jobs.append({
                         "title": title, 
                         "company": company, 
                         "url": job_url, 
+                        "applicants": applicants,
                         "description": description[:1200]
                     })
                     
                     seen_jobs[job_url] = {"title": title, "company": company, "seen_at": datetime.now().isoformat()}
                     print(f"  ✅ Scraped: {title} at {company}")
                 except Exception as e:
+                    error_msg = str(e).split('\n')[0]
+                    print(f"  ⚠️ Error scraping card {i}: {error_msg}")
                     continue
 
         os.makedirs(os.path.join(BASE_DIR, 'data'), exist_ok=True)
@@ -128,7 +208,6 @@ def scrape_linkedin_jobs(keyword, location, max_pages, max_jobs):
             json.dump({"jobs": all_jobs}, f, indent=2)
         with open(SEEN_JOBS_FILE, "w") as f:
             json.dump(seen_jobs, f, indent=2)
-            
         browser.close()
         print(f"💾 Done! Scraped {len(all_jobs)} jobs.")
 

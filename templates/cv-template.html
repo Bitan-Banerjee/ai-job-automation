@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resume</title>
+    <style>
+        :root {
+            --primary-color: #111827;
+            --text-color: #374151;
+            --link-color: #2563eb;
+        }
+        body {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            color: var(--text-color);
+            line-height: 1.5;
+            margin: 0;
+            padding: 40px 50px;
+            font-size: 11pt;
+        }
+        h1 {
+            font-size: 24pt;
+            color: var(--primary-color);
+            margin-bottom: 5px;
+            margin-top: 0;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        h2 {
+            font-size: 13pt;
+            color: var(--primary-color);
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 4px;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            page-break-after: avoid;
+            break-after: avoid;
+        }
+        h3 {
+            font-size: 11pt;
+            color: var(--primary-color);
+            margin-bottom: 2px;
+            margin-top: 15px;
+            page-break-after: avoid;
+            break-after: avoid;
+        }
+        p {
+            margin: 5px 0;
+            page-break-inside: avoid;
+            break-inside: avoid;
+        }
+        h3 + p {
+            page-break-after: avoid;
+            break-after: avoid;
+        }
+        ul {
+            margin-top: 5px;
+            margin-bottom: 10px;
+            padding-left: 20px;
+            page-break-inside: avoid;
+            break-inside: avoid;
+        }
+        li {
+            margin-bottom: 4px;
+            page-break-inside: avoid;
+            break-inside: avoid;
+        }
+        a {
+            color: var(--link-color);
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    {{content}}
+</body>
+</html>

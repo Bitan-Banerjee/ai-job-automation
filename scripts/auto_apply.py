@@ -14,7 +14,6 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 SESSION_FILE = os.path.join(BASE_DIR, 'data', 'linkedin_session.json')
 MATCHED_PATH = os.path.join(BASE_DIR, 'data', 'matched_jobs.json')
 REGISTRY_PATH = os.path.join(BASE_DIR, 'data', 'job_qa_registry.json')
-STATIC_RESUME_PATH = os.path.join(BASE_DIR, 'Resume.docx')
 
 def get_batch_answers_from_gemini(questions_list, registry):
     if not questions_list: return {}
@@ -37,10 +36,13 @@ def get_batch_answers_from_gemini(questions_list, registry):
     6. MAPPING: AWS services -> 'years_experience_aws'. RDBMS -> 'years_experience_sql'.
     """
     
-    for attempt in range(3):
+    fallback_models = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest']
+    
+    for attempt in range(len(fallback_models)):
+        model_name = fallback_models[attempt]
         try:
-            response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-            if not response or not response.text: raise ValueError("Empty response")
+            response = client.models.generate_content(model=model_name, contents=prompt)
+            if not response or not response.text: continue
             
             text = response.text.strip()
             if text.startswith("`" * 3 + "json"): text = text[7:-3].strip()
@@ -48,16 +50,14 @@ def get_batch_answers_from_gemini(questions_list, registry):
             
             new_answers = json.loads(text)
             return new_answers
-            
         except Exception as e: 
             error_msg = str(e)
-            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                print(f"    ⏳ Rate Limit Hit! Sleeping for 60 seconds...")
-                time.sleep(60)
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "503" in error_msg:
+                print(f"    ⚠️ Rate Limit/Unavailable on {model_name}. Switching...")
+                continue
             else:
-                print(f"    ⚠️ Batch API Error (Attempt {attempt + 1}): {error_msg[:100]}")
-                time.sleep(2)
-                
+                print(f"    ⚠️ API Error on {model_name}: {error_msg[:100]}")
+                continue
     return {}
 
 def handle_questions(page, registry):
@@ -144,7 +144,12 @@ def auto_apply():
         page.set_default_timeout(60000)
 
         for job in jobs:
-            print(f"\n🚀 Processing: {job['company']}")
+            score = job.get('ai_score', 0)
+            if score < 80:
+                print(f"\n⏭️  Skipping {job.get('company', 'Unknown')}: AI Score ({score}) is below the 80 threshold.")
+                continue
+                
+            print(f"\n🚀 Processing: {job.get('company', 'Unknown')} (Score: {score})")
             try:
                 page.goto(job['url'], wait_until="domcontentloaded")
             except Exception as e:
@@ -213,10 +218,11 @@ def auto_apply():
                 
                 file_input = modal.locator("input[type='file']")
                 if file_input.count() > 0:
-                    if os.path.exists(STATIC_RESUME_PATH):
+                    target_resume = job.get('tailored_resume_path', '')
+                    if os.path.exists(target_resume):
                         try:
-                            file_input.first.set_input_files(STATIC_RESUME_PATH)
-                            print("    📄 Attached standard Resume.docx.")
+                            file_input.first.set_input_files(target_resume)
+                            print(f"    📄 Attached {os.path.basename(target_resume)}.")
                         except Exception as e: 
                             pass
                 
@@ -234,6 +240,9 @@ def auto_apply():
                     submit_btn.click()
                     time.sleep(3)
                     print(f"  ✅ SUCCESS! Application fully submitted.")
+                    job['status'] = 'applied'
+                    with open(MATCHED_PATH, 'w') as f:
+                        json.dump({"approved_jobs": jobs}, f, indent=4)
                     break
                 elif review_btn.is_visible():
                     review_btn.click()

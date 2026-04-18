@@ -101,6 +101,18 @@ We iterated through several architectures to find the perfect balance of Speed, 
 - **Asynchronous File I/O:** Using Python's `asyncio` to write results to disk in the background, preventing blocking the main thread from preparing the next LLM batch.
 
 ## 🎯 Next Steps
-1. **Fix the Cloud Pipeline:** Update the batched `match_job_gemini.py` script to require a `"reasoning"` string in its JSON output. This will force Chain-of-Thought, restoring Gemma-level accuracy while maintaining the 60-second execution time for large 1,000-job runs.
-2. **Test the Tailorer:** Run `tailor_resume.py` to see how the AI customizes the base resume for the approved jobs.
-3. **Test the Auto-Applier:** Run `auto_apply.py` to watch the Playwright automation navigate LinkedIn forms and use the local Gemma 4 model to populate the QA registry.
+1. **Build Direct ATS Scraper:** Develop a zero-token python scraper for Applicant Tracking Systems (e.g., Greenhouse/Lever) to bypass LinkedIn entirely, acting as a new Sourcing module.
+2. **Add "Deep Research" Mode (Optional):** Pre-interview prep generation based on the `career-ops` repository pattern.
+
+## 📈 Recent Architectural Upgrades (Inspired by Career-Ops)
+To make the system more robust and token-efficient, we adapted several patterns from the `santifer/career-ops` repository:
+1. **Profile Decoupling:** Extracted the hardcoded Candidate Profile and Dealbreakers from `match_job_gemini.py` into a standalone `config/profile.json` configuration file. This allows changing job targets without touching Python code.
+2. **Token-Efficient Scoring:** Upgraded the Gemini filtering prompt to not only output a boolean `match`, but also a `score` from 0-100 based on skill alignment. This costs 0 extra API calls but allows sorting jobs by quality. Added this AI Score to the `export_tracker.py` CSV.
+3. **Playwright PDF Engine (Resume Tailoring):** 
+   - Abandoned Python `.docx` manipulation due to formatting issues.
+   - Shifted to a web-based architecture: The candidate's master resume is now a simple `base_resume.md` file.
+   - `tailor_resume.py` uses Gemini to rewrite the markdown summary and bullet points, outputs raw HTML, injects it into a CSS-styled `cv-template.html`, and uses Playwright's headless Chromium to instantly print an ATS-optimized, pixel-perfect PDF.
+   - **PDF Rendering Fix:** Added Regex extraction and template validation to `tailor_resume.py` to prevent "empty white pages" caused by LLMs hallucinating `<html>`/`<body>` wrapper tags, or the HTML template losing its `{{content}}` placeholder.
+4. **Sourcing Optimizations:** Upgraded `linkedin_scraper.py` to use exact phrase matching (`%22`) in the URL, widened the search window to 3 days (`r259200`), added a zero-token `is_title_relevant` Python gatekeeper, and implemented an Applicant Cap logic to immediately drop jobs with >100 applicants, ensuring API tokens are only spent on high-quality, low-competition roles.
+5. **Goal-Oriented Orchestrator:** Upgraded `main.py` into a robust `while` loop that reads `Job_Applications_Tracker.csv` and repeatedly runs the pipeline (up to 4 times) until the daily quota of 50 successful applications is met. Replaced `sys.exit(1)` with `return False` so single-stage crashes don't kill the looping agent.
+6. **Directory Cleanup:** Migrated all active code to `/Users/bitanbanerjee/Coding/GitHub_Repos/AiAutomation/` to properly version control the project via Git while ignoring ephemeral data and environment variables.

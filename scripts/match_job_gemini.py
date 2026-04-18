@@ -15,12 +15,7 @@ except Exception as e:
 
 SCRAPED_PATH = os.path.join(BASE_DIR, 'data', 'jobs.json')
 MATCHED_PATH = os.path.join(BASE_DIR, 'data', 'matched_jobs.json')
-
-CANDIDATE_PROFILE = """
-Target Role: Data Engineer
-Candidate Experience: 3.6 years (Open to roles requiring 0 to 5 years of experience)
-Core Skills: Python, SQL, PySpark, AWS (Lambda, Step Functions, Glue, S3), Databricks, ETL/ELT.
-"""
+PROFILE_PATH = os.path.join(BASE_DIR, 'config', 'profile.json')
 
 BATCH_SIZE = 10  # Balanced for Gemini Flash to handle reasoning tokens safely
 DELAY_BETWEEN_BATCHES = 15  # 15 seconds delay to stay safely under the 5 RPM limit
@@ -33,7 +28,7 @@ def passes_basic_filter(title):
             return False
     return True
 
-def evaluate_job_batch(batch_jobs):
+def evaluate_job_batch(batch_jobs, profile_data):
     if not client:
         return {}
         
@@ -47,24 +42,27 @@ def evaluate_job_batch(batch_jobs):
             "description": job.get('description', '')
         })
 
+    dealbreakers_text = "\n    ".join(profile_data.get('dealbreakers', []))
+    skills_text = ", ".join(profile_data.get('core_skills', []))
+
     prompt = f"""
     You are an expert technical recruiter. 
     
     Candidate Profile:
-    {CANDIDATE_PROFILE}
+    Target Role: {profile_data.get('target_role')}
+    Candidate Experience: {profile_data.get('candidate_experience')}
+    Core Skills: {skills_text}
     
     CRITICAL DEALBREAKERS (Reject if ANY are true):
-    DB1: Job strictly requires MORE than 5 years of experience (e.g., "6-10 Years"). Do not confuse company/founder experience with job requirements.
-    DB2: Job heavily focuses on AI, Machine Learning, Data Science, Statistical modeling, or Mathematics.
-    DB3: Job requires Azure or GCP, but does NOT mention AWS.
+    {dealbreakers_text}
 
     Evaluate the following batch of jobs. 
-    Return ONLY a valid JSON object mapping the "id" to an object containing your step-by-step reasoning against the dealbreakers, and the final boolean.
+    Return ONLY a valid JSON object mapping the "id" to an object containing your step-by-step reasoning against the dealbreakers, a "score" from 0 to 100 based on skill alignment, and the final "match" boolean.
     
     Format exactly like this:
     {{
-      "0": {{"reasoning": "Job needs 2-4 years exp. No AI. Mentions AWS. Match.", "match": true}},
-      "1": {{"reasoning": "Job requires 8+ years experience, which violates DB1 (>5 years).", "match": false}}
+      "0": {{"reasoning": "Job needs 2-4 years exp. Mentions AWS.", "score": 85, "match": true}},
+      "1": {{"reasoning": "Job requires 8+ years experience, violating DB1.", "score": 0, "match": false}}
     }}
 
     Jobs to evaluate:
@@ -73,7 +71,7 @@ def evaluate_job_batch(batch_jobs):
     '''
     """
     
-    fallback_models = ['gemini-3-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemma-4-31b']
+    fallback_models = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest']
     for model_name in fallback_models:
         try:
             response = client.models.generate_content(
@@ -107,8 +105,23 @@ def match_jobs_batched():
         print(f"❌ Missing {SCRAPED_PATH}.")
         return
         
-    with open(SCRAPED_PATH, 'r') as f:
-        jobs = json.load(f).get('jobs', [])
+    if not os.path.exists(PROFILE_PATH):
+        print(f"❌ Missing {PROFILE_PATH}. Please create profile.json in the root directory.")
+        return
+        
+    try:
+        with open(PROFILE_PATH, 'r') as f:
+            profile_data = json.load(f)
+    except json.JSONDecodeError:
+        print(f"❌ Error: {PROFILE_PATH} is empty or contains invalid JSON.")
+        return
+        
+    try:
+        with open(SCRAPED_PATH, 'r') as f:
+            jobs = json.load(f).get('jobs', [])
+    except json.JSONDecodeError:
+        print(f"❌ Error: {SCRAPED_PATH} is empty or contains invalid JSON.")
+        return
         
     # Pre-filter to save API calls
     valid_jobs = [j for j in jobs if passes_basic_filter(j.get('title', ''))]
@@ -120,7 +133,7 @@ def match_jobs_batched():
         batch = valid_jobs[i:i + BATCH_SIZE]
         print(f"\n📦 Sending Batch {i//BATCH_SIZE + 1} ({len(batch)} jobs) to Gemini...")
         
-        results = evaluate_job_batch(batch)
+        results = evaluate_job_batch(batch, profile_data)
         
         for job_idx_str, data in results.items():
             idx = int(job_idx_str)
@@ -132,16 +145,19 @@ def match_jobs_batched():
                 if isinstance(data, dict):
                     is_match = str(data.get("match", "false")).lower() == "true"
                     reason = data.get("reasoning", "No reasoning provided.")
+                    score = data.get("score", 0)
                 else:
                     is_match = str(data).lower() == "true"
                     reason = "No reasoning provided."
+                    score = 0
                 
                 if is_match:
-                    print(f"  ✅ MATCHED: {company} - {title}")
+                    print(f"  ✅ MATCHED (Score: {score}): {company} - {title}")
                     print(f"     └ 📝 {reason}")
+                    batch[idx]['ai_score'] = score
                     approved_jobs.append(batch[idx])
                 else:
-                    print(f"  ❌ REJECTED: {company} - {title}")
+                    print(f"  ❌ REJECTED (Score: {score}): {company} - {title}")
                     print(f"     └ 📝 {reason}")
         
         # Respect the 5 RPM rate limit (if there are more batches to process)
