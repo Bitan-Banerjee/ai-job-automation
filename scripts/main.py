@@ -8,8 +8,10 @@ from datetime import datetime
 
 try:
     from linkedin_scraper import scrape_linkedin_jobs
+    from naukri_scraper import scrape_naukri_jobs
     from match_job_gemini import match_jobs_batched
     from auto_apply import auto_apply
+    from naukri_auto_apply import naukri_apply
     from tailor_resume import tailor_resumes
     from export_tracker import export_to_excel
 except ImportError as e:
@@ -17,27 +19,40 @@ except ImportError as e:
     sys.exit(1)
 
 class TeeLogger(object):
-    def __init__(self, filename, stream):
+    def __init__(self, stream, *files):
         self.terminal = stream
-        self.log = open(filename, "a", encoding="utf-8")
+        self.files = files
 
     def write(self, message):
         self.terminal.write(message)
-        self.log.write(message)
-        self.log.flush()
+        for f in self.files:
+            f.write(message)
+            f.flush()
 
     def flush(self):
         self.terminal.flush()
-        self.log.flush()
+        for f in self.files:
+            f.flush()
 
 def setup_logging():
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     now = datetime.now()
+    
+    # 1. Setup daily archive log
     log_dir = os.path.join(base_dir, 'logs', now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
     os.makedirs(log_dir, exist_ok=True)
     log_filename = os.path.join(log_dir, f"run_{now.strftime('%H-%M-%S')}.log")
-    sys.stdout = TeeLogger(log_filename, sys.stdout)
-    sys.stderr = TeeLogger(log_filename, sys.stderr)
+    
+    # 2. Setup a static Markdown mirror for the AI context
+    latest_filename = os.path.join(base_dir, "latest_run.md")
+    with open(latest_filename, "w", encoding="utf-8") as f:
+        f.write(f"# Pipeline Run: {now.strftime('%Y-%m-%d %H:%M:%S')}\n\n```text\n")
+        
+    log_file = open(log_filename, "a", encoding="utf-8")
+    latest_file = open(latest_filename, "a", encoding="utf-8")
+    
+    sys.stdout = TeeLogger(sys.stdout, log_file, latest_file)
+    sys.stderr = TeeLogger(sys.stderr, log_file, latest_file)
     return log_filename
 
 def get_todays_application_count():
@@ -84,24 +99,60 @@ def run_daily_quota_loop(target_quota=50, max_loops=4):
         
         print(f"\n🔄 --- PIPELINE LOOP {attempt}/{max_loops} (Attempting to find {remaining} more matches) ---")
         
+        # Quarantine failed/skipped applications before wiping
+        failed_path = os.path.join(base_dir, 'data', 'failed_applications.json')
+        for prefix in ['linkedin', 'naukri']:
+            matched_path = os.path.join(base_dir, 'data', f'{prefix}_matched_jobs.json')
+            if os.path.exists(matched_path):
+                try:
+                    with open(matched_path, 'r') as f:
+                        approved_jobs = json.load(f).get('approved_jobs', [])
+                    
+                    failed_jobs = [j for j in approved_jobs if j.get('status') != 'applied']
+                    if failed_jobs:
+                        all_failed = []
+                        if os.path.exists(failed_path):
+                            with open(failed_path, 'r') as f:
+                                all_failed = json.load(f).get('failed_jobs', [])
+                        all_failed.extend(failed_jobs)
+                        with open(failed_path, 'w') as f:
+                            json.dump({"failed_jobs": all_failed}, f, indent=4)
+                        print(f"  📥 Quarantined {len(failed_jobs)} failed/skipped {prefix} applications.")
+                except Exception as e:
+                    print(f"  ⚠️ Failed to quarantine {prefix} jobs: {e}")
+
         # Wipe intermediate files to start fresh, but keep seen_jobs.json
-        for f_name in ['jobs.json', 'matched_jobs.json']:
-            f_path = os.path.join(base_dir, 'data', f_name)
-            if os.path.exists(f_path):
-                os.remove(f_path)
+        for prefix in ['linkedin', 'naukri']:
+            for suffix in ['_jobs.json', '_matched_jobs.json']:
+                f_path = os.path.join(base_dir, 'data', f"{prefix}{suffix}")
+                if os.path.exists(f_path):
+                    os.remove(f_path)
         
-        success = run_pipeline(max_jobs=jobs_to_scrape, start_stage=1)
+        # Run Naukri Pipeline
+        naukri_success = run_naukri_pipeline(max_jobs=jobs_to_scrape, start_stage=1)
         
-        if not success:
-            print("⚠️ Loop encountered a critical error. Resting for 60s before next attempt...")
+        # Check quota again before running LinkedIn
+        current_count = get_todays_application_count()
+        if current_count >= target_quota:
+            print("✅ Daily quota met after Naukri! Skipping LinkedIn.")
+            break
+            
+        remaining = target_quota - current_count
+        jobs_to_scrape = min(remaining * 8, 150)
+        
+        # Run LinkedIn Pipeline
+        linkedin_success = run_linkedin_pipeline(max_jobs=jobs_to_scrape, start_stage=1)
+        
+        if not linkedin_success and not naukri_success:
+            print("⚠️ Both pipelines encountered critical errors. Resting for 60s before next attempt...")
             time.sleep(60)
     else:
         print(f"\n⚠️ Reached max loops ({max_loops}). Did not hit quota. Resting until tomorrow.")
 
-def determine_start_stage():
+def determine_start_stage(prefix="linkedin"):
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    jobs_path = os.path.join(base_dir, 'data', 'jobs.json')
-    matched_path = os.path.join(base_dir, 'data', 'matched_jobs.json')
+    jobs_path = os.path.join(base_dir, 'data', f'{prefix}_jobs.json')
+    matched_path = os.path.join(base_dir, 'data', f'{prefix}_matched_jobs.json')
     
     if os.path.exists(matched_path):
         try:
@@ -111,7 +162,7 @@ def determine_start_stage():
                 return 5
             if all(j.get('status') == 'applied' for j in approved):
                 return 5
-            if any(not j.get('tailored_resume_path') for j in approved):
+            if prefix == "linkedin" and any(not j.get('tailored_resume_path') for j in approved):
                 return 3
             return 4
         except:
@@ -120,77 +171,117 @@ def determine_start_stage():
         return 2
     return 1
 
-def run_pipeline(max_jobs=25, start_stage=1):
-    """
-    Orchestrates the end-to-end job application pipeline from scraping to applying.
-    """
-    print("🚀🚀🚀 STARTING AI JOB APPLICATION PIPELINE 🚀🚀🚀")
+def run_linkedin_pipeline(max_jobs=25, start_stage=1):
+    print("\n" + "="*50)
+    print("🚀🚀🚀 STARTING LINKEDIN PIPELINE 🚀🚀🚀")
     print(f"📍 Starting from STAGE {start_stage}")
-    print("-" * 50)
+    print("=" * 50)
+    
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    scraped_path = os.path.join(base_dir, 'data', 'linkedin_jobs.json')
+    matched_path = os.path.join(base_dir, 'data', 'linkedin_matched_jobs.json')
     
     if start_stage <= 1:
-        # --- STAGE 1: SOURCING ---
         try:
             print("\n[STAGE 1/5] 🌐 Scraping fresh jobs from LinkedIn...")
-            print(f"    Targeting up to {max_jobs} NEW jobs (Scanning up to 20 pages deeply).")
-            scrape_linkedin_jobs(keyword="Data Engineer", location="India", max_pages=20, max_jobs=max_jobs)
+            max_pages = (max_jobs // 25) + 2
+            scrape_linkedin_jobs(keyword="Data Engineer", location="India", max_pages=max_pages, max_jobs=max_jobs, output_file=scraped_path)
             print("[STAGE 1/5] ✅ Scraping complete.")
             time.sleep(2)
         except Exception as e:
-            print(f"\n[CRITICAL FAILURE] 🔥 Pipeline failed at STAGE 1: SOURCING.")
+            print(f"\n[CRITICAL FAILURE] 🔥 LinkedIn Pipeline failed at STAGE 1: SOURCING.")
             print(f"  └─ Error: {e}")
             return False
-        print("-" * 50)
 
     if start_stage <= 2:
-        # --- STAGE 2: FILTERING ---
         try:
             print("\n[STAGE 2/5] 🧠 Filtering jobs with Gemini AI...")
-            match_jobs_batched()
+            match_jobs_batched(scraped_path=scraped_path, matched_path=matched_path)
             print("[STAGE 2/5] ✅ Filtering complete.")
             time.sleep(2)
         except Exception as e:
-            print(f"\n[CRITICAL FAILURE] 🔥 Pipeline failed at STAGE 2: FILTERING.")
+            print(f"\n[CRITICAL FAILURE] 🔥 LinkedIn Pipeline failed at STAGE 2: FILTERING.")
             print(f"  └─ Error: {e}")
             return False
-        print("-" * 50)
 
     if start_stage <= 3:
-        # --- STAGE 3: TAILORING RESUMES ---
         try:
             print("\n[STAGE 3/5] ✍️ Tailoring resumes for approved jobs...")
-            tailor_resumes()
+            tailor_resumes(matched_path=matched_path)
             print("[STAGE 3/5] ✅ Tailoring complete.")
             time.sleep(2)
         except Exception as e:
-            print(f"\n[CRITICAL FAILURE] 🔥 Pipeline failed at STAGE 3: TAILORING.")
+            print(f"\n[CRITICAL FAILURE] 🔥 LinkedIn Pipeline failed at STAGE 3: TAILORING.")
             print(f"  └─ Error: {e}")
             return False
-        print("-" * 50)
 
     if start_stage <= 4:
-        # --- STAGE 4: APPLYING ---
         try:
             print("\n[STAGE 4/5] 🤖 Deploying Auto-Apply Bot...")
-            auto_apply()
+            auto_apply(matched_path=matched_path)
             print("[STAGE 4/5] ✅ Auto-Applying complete.")
         except Exception as e:
-            print(f"\n[CRITICAL FAILURE] 🔥 Pipeline failed at STAGE 4: APPLYING.")
+            print(f"\n[CRITICAL FAILURE] 🔥 LinkedIn Pipeline failed at STAGE 4: APPLYING.")
             print(f"  └─ Error: {e}")
             return False
-        print("-" * 50)
 
     if start_stage <= 5:
-        # --- STAGE 5: LOGGING ---
         try:
             print("\n[STAGE 5/5] 📊 Exporting daily applications to Excel tracker...")
-            export_to_excel()
+            export_to_excel(matched_path=matched_path)
             print("[STAGE 5/5] ✅ Export complete.")
         except Exception as e:
             print(f"\n[WARNING] ⚠️ Pipeline finished, but failed to export to Excel: {e}")
-        print("-" * 50)
+            
+    return True
+
+def run_naukri_pipeline(max_jobs=25, start_stage=1):
+    print("\n" + "="*50)
+    print("🚀🚀🚀 STARTING NAUKRI PIPELINE 🚀🚀🚀")
+    print(f"📍 Starting from STAGE {start_stage}")
+    print("=" * 50)
+    
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    scraped_path = os.path.join(base_dir, 'data', 'naukri_jobs.json')
+    matched_path = os.path.join(base_dir, 'data', 'naukri_matched_jobs.json')
+    
+    if start_stage <= 1:
+        try:
+            print("\n[STAGE 1/4] 🌐 Scraping fresh jobs from Naukri...")
+            scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=max_jobs, output_file=scraped_path)
+            print("[STAGE 1/4] ✅ Scraping complete.")
+            time.sleep(2)
+        except Exception as e:
+            print(f"\n[CRITICAL FAILURE] 🔥 Naukri Pipeline failed at STAGE 1: SOURCING.\n  └─ Error: {e}")
+            return False
+
+    if start_stage <= 2:
+        try:
+            print("\n[STAGE 2/4] 🧠 Filtering jobs with Gemini AI...")
+            match_jobs_batched(scraped_path=scraped_path, matched_path=matched_path)
+            print("[STAGE 2/4] ✅ Filtering complete.")
+            time.sleep(2)
+        except Exception as e:
+            print(f"\n[CRITICAL FAILURE] 🔥 Naukri Pipeline failed at STAGE 2: FILTERING.\n  └─ Error: {e}")
+            return False
+
+    if start_stage <= 4:
+        try:
+            print("\n[STAGE 3/4] 🤖 Deploying Naukri Auto-Apply Bot...")
+            naukri_apply(matched_path=matched_path)
+            print("[STAGE 3/4] ✅ Auto-Applying complete.")
+        except Exception as e:
+            print(f"\n[CRITICAL FAILURE] 🔥 Naukri Pipeline failed at STAGE 3: APPLYING.\n  └─ Error: {e}")
+            return False
+
+    if start_stage <= 5:
+        try:
+            print("\n[STAGE 4/4] 📊 Exporting daily applications to Excel tracker...")
+            export_to_excel(matched_path=matched_path)
+            print("[STAGE 4/4] ✅ Export complete.")
+        except Exception as e:
+            print(f"\n[WARNING] ⚠️ Pipeline finished, but failed to export to Excel: {e}")
         
-    print("\n🎉🎉🎉 PIPELINE COMPLETED SUCCESSFULLY! 🎉🎉🎉")
     return True
 
 if __name__ == "__main__":
@@ -206,11 +297,18 @@ if __name__ == "__main__":
     print(f"📝 Logging this run to: {log_file}")
     
     if args.resume or args.start_stage != 1:
-        stage = args.start_stage
         if args.resume:
-            stage = determine_start_stage()
-            print(f"🔍 Resume flag detected. Auto-determined starting stage: {stage}")
-        run_pipeline(max_jobs=args.jobs, start_stage=stage)
+            l_stage = determine_start_stage("linkedin")
+            n_stage = determine_start_stage("naukri")
+            if l_stage < 5:
+                print(f"🔍 Resume flag detected. Starting LinkedIn at stage: {l_stage}")
+                run_linkedin_pipeline(max_jobs=args.jobs, start_stage=l_stage)
+            if n_stage < 5:
+                print(f"🔍 Resume flag detected. Starting Naukri at stage: {n_stage}")
+                run_naukri_pipeline(max_jobs=args.jobs, start_stage=n_stage)
+        else:
+            run_linkedin_pipeline(max_jobs=args.jobs, start_stage=args.start_stage)
+            run_naukri_pipeline(max_jobs=args.jobs, start_stage=args.start_stage)
     else:
         # Default behavior: run the daily quota goal-oriented loop
         run_daily_quota_loop(target_quota=args.target, max_loops=args.max_loops)

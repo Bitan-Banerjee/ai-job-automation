@@ -10,11 +10,10 @@ from playwright.sync_api import sync_playwright
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 
-try:
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-except Exception as e:
-    print(f"Failed to initialize Gemini Client: {e}")
-    client = None
+api_keys = []
+for key_name in ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"]:
+    if os.getenv(key_name):
+        api_keys.append(os.getenv(key_name).strip())
 
 MATCHED_PATH = os.path.join(BASE_DIR, 'data', 'matched_jobs.json')
 BASE_RESUME_PATH = os.path.join(BASE_DIR, 'base_resume.md')
@@ -22,8 +21,8 @@ TEMPLATE_PATH = os.path.join(BASE_DIR, 'templates', 'cv-template.html')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'outputs', 'resumes')
 
 def generate_tailored_html(job_title, job_desc, base_resume):
-    if not client:
-        return None
+    if not api_keys:
+        raise Exception("No Gemini API keys found in .env file.")
         
     prompt = f"""
     You are an expert executive resume writer. 
@@ -47,36 +46,39 @@ def generate_tailored_html(job_title, job_desc, base_resume):
     """
     
     fallback_models = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest']
-    for model_name in fallback_models:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt
-            )
-            text = response.text.strip()
-            text = text.replace("```html", "").replace("```", "").strip()
-            
-            # Safely extract inner body if the AI hallucinated the full HTML wrapper
-            body_match = re.search(r"<body[^>]*>(.*?)</body>", text, re.IGNORECASE | re.DOTALL)
-            if body_match:
-                text = body_match.group(1)
+    for key_idx, api_key in enumerate(api_keys):
+        client = genai.Client(api_key=api_key)
+        for model_name in fallback_models:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
+                text = response.text.strip()
+                text = text.replace("```html", "").replace("```", "").strip()
                 
-            return text.strip()
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                print(f"  ⚠️ Rate Limit hit on {model_name}. Switching...")
-                continue
-            elif "404" in error_str or "NOT_FOUND" in error_str:
-                print(f"  ⚠️ Model {model_name} not found. Switching...")
-                continue
-            elif "503" in error_str or "UNAVAILABLE" in error_str:
-                print(f"  ⚠️ 503 Unavailable on {model_name}. Switching...")
-                continue
-            else:
-                print(f"  ⚠️ API Error on {model_name}: {error_str}")
-                return None
-    return None
+                # Safely extract inner body if the AI hallucinated the full HTML wrapper
+                body_match = re.search(r"<body[^>]*>(.*?)</body>", text, re.IGNORECASE | re.DOTALL)
+                if body_match:
+                    text = body_match.group(1)
+                    
+                return text.strip()
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                    print(f"  ⚠️ Rate Limit hit on {model_name} (Key {key_idx + 1}). Switching...")
+                    continue
+                elif "404" in error_str or "NOT_FOUND" in error_str:
+                    print(f"  ⚠️ Model {model_name} not found. Switching...")
+                    continue
+                elif "503" in error_str or "UNAVAILABLE" in error_str:
+                    print(f"  ⚠️ 503 Unavailable on {model_name} (Key {key_idx + 1}). Switching...")
+                    continue
+                else:
+                    print(f"  ⚠️ API Error on {model_name} (Key {key_idx + 1}): {error_str}")
+                    continue
+                    
+    raise Exception("Gemini API limits exhausted during tailoring across all available keys. Halting.")
 
 def create_pdf_from_html(html_content, output_path):
     with sync_playwright() as p:
@@ -88,9 +90,9 @@ def create_pdf_from_html(html_content, output_path):
         page.pdf(path=output_path, format="A4", print_background=True)
         browser.close()
 
-def tailor_resumes():
+def tailor_resumes(matched_path=MATCHED_PATH):
     missing = []
-    if not os.path.exists(MATCHED_PATH): missing.append(f"matched_jobs.json\n    Expected at: {MATCHED_PATH}")
+    if not os.path.exists(matched_path): missing.append(f"matched_jobs.json\n    Expected at: {matched_path}")
     if not os.path.exists(BASE_RESUME_PATH): missing.append(f"base_resume.md\n    Expected at: {BASE_RESUME_PATH}")
     if not os.path.exists(TEMPLATE_PATH): missing.append(f"cv-template.html\n    Expected at: {TEMPLATE_PATH}")
     
@@ -103,7 +105,7 @@ def tailor_resumes():
     daily_output_dir = os.path.join(OUTPUT_DIR, now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
     os.makedirs(daily_output_dir, exist_ok=True)
 
-    with open(MATCHED_PATH, 'r') as f: jobs = json.load(f).get('approved_jobs', [])
+    with open(matched_path, 'r') as f: jobs = json.load(f).get('approved_jobs', [])
     with open(BASE_RESUME_PATH, 'r') as f: base_resume = f.read()
     with open(TEMPLATE_PATH, 'r') as f: html_template = f.read()
 
@@ -114,6 +116,11 @@ def tailor_resumes():
     print(f"📄 Found {len(jobs)} approved jobs. Tailoring resumes...")
     
     for i, job in enumerate(jobs):
+        score = job.get('ai_score', 0)
+        if score < 80:
+            print(f"\n  ⏭️  Skipping tailoring for {job.get('company', 'Unknown')}: Score ({score}) is below 80.")
+            continue
+            
         company = job.get('company', 'Unknown')
         safe_company = "".join(c if c.isalnum() else "_" for c in company).strip("_")
         pdf_path = os.path.join(daily_output_dir, f"Resume_{safe_company}.pdf")
@@ -135,7 +142,7 @@ def tailor_resumes():
             
         if i < len(jobs) - 1: time.sleep(15)  # Pace API requests to respect limits
             
-    with open(MATCHED_PATH, 'w') as f:
+    with open(matched_path, 'w') as f:
         json.dump({"approved_jobs": jobs}, f, indent=4)
     print(f"\n🎉 Resume tailoring complete!")
 

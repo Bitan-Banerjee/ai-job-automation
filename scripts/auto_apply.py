@@ -9,7 +9,11 @@ from google import genai
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(BASE_DIR, '.env'))
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+api_keys = []
+for key_name in ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"]:
+    if os.getenv(key_name):
+        api_keys.append(os.getenv(key_name).strip())
 
 SESSION_FILE = os.path.join(BASE_DIR, 'data', 'linkedin_session.json')
 MATCHED_PATH = os.path.join(BASE_DIR, 'data', 'matched_jobs.json')
@@ -38,27 +42,30 @@ def get_batch_answers_from_gemini(questions_list, registry):
     
     fallback_models = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest']
     
-    for attempt in range(len(fallback_models)):
-        model_name = fallback_models[attempt]
-        try:
-            response = client.models.generate_content(model=model_name, contents=prompt)
-            if not response or not response.text: continue
-            
-            text = response.text.strip()
-            if text.startswith("`" * 3 + "json"): text = text[7:-3].strip()
-            elif text.startswith("`" * 3): text = text[3:-3].strip()
-            
-            new_answers = json.loads(text)
-            return new_answers
-        except Exception as e: 
-            error_msg = str(e)
-            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "503" in error_msg:
-                print(f"    ⚠️ Rate Limit/Unavailable on {model_name}. Switching...")
-                continue
-            else:
-                print(f"    ⚠️ API Error on {model_name}: {error_msg[:100]}")
-                continue
-    return {}
+    for key_idx, api_key in enumerate(api_keys):
+        client = genai.Client(api_key=api_key)
+        for attempt in range(len(fallback_models)):
+            model_name = fallback_models[attempt]
+            try:
+                response = client.models.generate_content(model=model_name, contents=prompt)
+                if not response or not response.text: continue
+                
+                text = response.text.strip()
+                if text.startswith("`" * 3 + "json"): text = text[7:-3].strip()
+                elif text.startswith("`" * 3): text = text[3:-3].strip()
+                
+                new_answers = json.loads(text)
+                return new_answers
+            except Exception as e: 
+                error_msg = str(e)
+                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "503" in error_msg:
+                    print(f"    ⚠️ Rate Limit/Unavailable on {model_name} (Key {key_idx + 1}). Switching...")
+                    continue
+                else:
+                    print(f"    ⚠️ API Error on {model_name} (Key {key_idx + 1}): {error_msg[:100]}")
+                    continue
+                    
+    raise Exception("Gemini API limits exhausted during Q&A across all available keys. Halting.")
 
 def handle_questions(page, registry):
     questions_to_ask = []
@@ -129,10 +136,11 @@ def handle_questions(page, registry):
                             lbl.click()
                             break
 
-def auto_apply():
+def auto_apply(matched_path=MATCHED_PATH):
     if not os.path.exists(REGISTRY_PATH): return
     with open(REGISTRY_PATH, 'r') as f: registry = json.load(f)
-    with open(MATCHED_PATH, 'r') as f: jobs = json.load(f).get("approved_jobs", [])
+    if not os.path.exists(matched_path): return
+    with open(matched_path, 'r') as f: jobs = json.load(f).get("approved_jobs", [])
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -145,11 +153,11 @@ def auto_apply():
 
         for job in jobs:
             score = job.get('ai_score', 0)
-            if score < 80:
-                print(f"\n⏭️  Skipping {job.get('company', 'Unknown')}: AI Score ({score}) is below the 80 threshold.")
-                continue
-                
             print(f"\n🚀 Processing: {job.get('company', 'Unknown')} (Score: {score})")
+            if score < 80:
+                print(f"  ⏭️  Skipping: AI Score is below the 80 threshold.")
+                continue
+
             try:
                 page.goto(job['url'], wait_until="domcontentloaded")
             except Exception as e:
@@ -241,7 +249,7 @@ def auto_apply():
                     time.sleep(3)
                     print(f"  ✅ SUCCESS! Application fully submitted.")
                     job['status'] = 'applied'
-                    with open(MATCHED_PATH, 'w') as f:
+                    with open(matched_path, 'w') as f:
                         json.dump({"approved_jobs": jobs}, f, indent=4)
                     break
                 elif review_btn.is_visible():

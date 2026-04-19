@@ -1,0 +1,176 @@
+import os
+import json
+import time
+import random
+import re
+import argparse
+from datetime import datetime
+from playwright.sync_api import sync_playwright
+
+try:
+    from linkedin_scraper import is_title_relevant, human_delay, safe_goto
+except ImportError:
+    pass
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+JOBS_FILE = os.path.join(BASE_DIR, 'data', 'jobs.json')
+SESSION_FILE = os.path.join(BASE_DIR, 'data', 'naukri_session.json')
+SEEN_JOBS_FILE = os.path.join(BASE_DIR, 'data', 'naukri_seen_jobs.json')
+COMPANY_BEHAVIOR_FILE = os.path.join(BASE_DIR, 'data', 'naukri_company_behavior.json')
+
+def scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=25, output_file=JOBS_FILE):
+    # Load memory to prevent duplicates
+    seen_jobs = {}
+    if os.path.exists(SEEN_JOBS_FILE):
+        with open(SEEN_JOBS_FILE, "r") as f:
+            seen_jobs = json.load(f)
+            
+    seen_roles = set((v.get('company'), v.get('title')) for v in seen_jobs.values())
+    
+    company_behavior = {}
+    if os.path.exists(COMPANY_BEHAVIOR_FILE):
+        with open(COMPANY_BEHAVIOR_FILE, "r") as f:
+            company_behavior = json.load(f)
+    
+    print(f"🌐 Booting up Naukri Scraper for '{keyword}'...")
+    
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)
+        context = browser.new_context(
+            viewport={'width': 1440, 'height': 900},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        
+        if os.path.exists(SESSION_FILE):
+            with open(SESSION_FILE, "r") as f:
+                context.add_cookies(json.load(f))
+                
+        page = context.new_page()
+        page.set_default_timeout(60000)
+        
+        # Handle Naukri Login if session is dead
+        print("🌐 Checking Naukri session...")
+        safe_goto(page, "https://www.naukri.com/nlogin/login")
+        human_delay(2, 4)
+        
+        if page.locator("#usernameField").is_visible():
+            print("🔐 Session expired or missing. Please log in manually in the browser window within the next 120 seconds...")
+            # We pause the script to let you manually type your credentials and pass CAPTCHA
+            page.wait_for_url("**/mnjuser/**", timeout=120000)
+            print("✅ Login detected! Saving session...")
+            with open(SESSION_FILE, "w") as f:
+                json.dump(context.cookies(), f)
+
+        formatted_keyword = keyword.lower().replace(' ', '-')
+        formatted_location = location.lower().replace(' ', '-')
+        all_jobs = []
+        max_pages = (max_jobs // 20) + 2
+        
+        for page_num in range(1, max_pages + 1):
+            if len(all_jobs) >= max_jobs: break
+            
+            # Build URL: e.g., https://www.naukri.com/data-engineer-jobs-in-india-2?jobAge=3&sort=r
+            page_suffix = f"-{page_num}" if page_num > 1 else ""
+            url = f"https://www.naukri.com/{formatted_keyword}-jobs-in-{formatted_location}{page_suffix}?jobAge=3&sort=r"
+            
+            print(f"📄 Scraping Naukri Page {page_num}...")
+            safe_goto(page, url)
+            human_delay(3, 5)
+            
+            cards = page.locator(".srp-jobtuple-wrapper")
+            card_count = cards.count()
+            print(f"    🔍 Found {card_count} job cards on this page.")
+            
+            if card_count == 0:
+                print("  ⚠️ No more jobs found. Stopping pagination.")
+                break
+                
+            # Step 1: Extract URLs to avoid stale elements
+            job_links = []
+            for i in range(card_count):
+                card = cards.nth(i)
+                title_el = card.locator("a.title").first
+                if not title_el.is_visible(): continue
+                
+                title = title_el.inner_text().strip()
+                if not is_title_relevant(title):
+                    print(f"  ⏭️ Skipped (Irrelevant Title): {title}")
+                    continue
+                    
+                company_el = card.locator("a.comp-name").first
+                company = company_el.inner_text().strip() if company_el.is_visible() else "Unknown"
+                
+                # Check Company Behavior Matrix to skip known external-only spammers
+                # Only skip if internal_apply count is 0 and external_apply count is significantly high (e.g., >= 5)
+                stats = company_behavior.get(company, {"internal": 0, "external": 0})
+                if stats["internal"] == 0 and stats["external"] >= 5:
+                    print(f"  ⏭️ Skipped: '{company}' strictly uses external portals.")
+                    continue
+                
+                href = title_el.get_attribute("href")
+                if not href: continue
+                
+                job_url = href.split("?")[0]
+                if job_url in seen_jobs or (company, title) in seen_roles:
+                    print(f"  ⏭️ Skipped: Already seen or duplicate {title} at {company}")
+                    continue
+                    
+                job_links.append({"title": title, "company": company, "url": job_url})
+                
+            # Step 2: Visit each URL to grab the description
+            for job_info in job_links:
+                if len(all_jobs) >= max_jobs: break
+                try:
+                    safe_goto(page, job_info['url'])
+                    human_delay(2, 3)
+                    
+                    company_name = job_info['company']
+                    if company_name not in company_behavior:
+                        company_behavior[company_name] = {"internal": 0, "external": 0}
+                    
+                    # Broad wildcard locator to catch standard and premium company pages
+                    desc_locator = page.locator(".job-desc, .dang-inner-html, div[class*='job-desc'], section[class*='job-desc']").first
+                    desc_locator.wait_for(timeout=5000)
+                    
+                    # Filter out jobs that redirect to external company portals and update behavior matrix
+                    apply_btn = page.locator("button:has-text('Apply'), a:has-text('Apply')").first
+                    if apply_btn.is_visible(timeout=2000):
+                        btn_text = apply_btn.inner_text().lower()
+                        if "company site" in btn_text or "employer site" in btn_text:
+                            company_behavior[company_name]["external"] += 1
+                            print(f"  ⏭️ Skipped: External application portal for {job_info['title']}")
+                            continue
+                        else:
+                            company_behavior[company_name]["internal"] += 1
+                            
+                    description = desc_locator.inner_text().strip()
+                    
+                    all_jobs.append({
+                        "title": job_info['title'], "company": job_info['company'], 
+                        "url": job_info['url'], "applicants": "Unknown", "description": description[:1200]
+                    })
+                    
+                    seen_jobs[job_info['url']] = {"title": job_info['title'], "company": job_info['company'], "seen_at": datetime.now().isoformat()}
+                    seen_roles.add((job_info['company'], job_info['title']))
+                    print(f"  ✅ Scraped: {job_info['title']} at {job_info['company']}")
+                except Exception as e:
+                    error_msg = str(e).split('\n')[0]
+                    print(f"  ⚠️ Failed to extract description for {job_info['title']}. Reason: {error_msg}")
+        
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        with open(output_file, "w") as f:
+            json.dump({"jobs": all_jobs}, f, indent=2)
+        with open(SEEN_JOBS_FILE, "w") as f:
+            json.dump(seen_jobs, f, indent=2)
+        with open(COMPANY_BEHAVIOR_FILE, "w") as f:
+            json.dump(company_behavior, f, indent=2)
+            
+        browser.close()
+        print(f"💾 Done! Scraped {len(all_jobs)} jobs from Naukri.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Scrape Naukri job postings.")
+    parser.add_argument("--max", type=int, default=10, help="Maximum number of jobs to scrape.")
+    args = parser.parse_args()
+    
+    scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=args.max)

@@ -9,7 +9,13 @@
 - **Infrastructure:** Highly prioritizes free, local, open-source models (like Llama 3.2 and Gemma 4) to avoid cloud API rate limits and costs. Will use Cloud APIs (like Gemini) only if batched efficiently to respect strict free-tier limits. **(Gemini Free Tier Hard Caps: 5 Requests Per Minute (RPM), 20 Requests Per Day (RPD))**.
 - **Hardware Context:** Running on an Apple Silicon Mac. Parallel execution of large local models (9B+ parameters like Gemma 4) causes memory/context-switching bottlenecks, whereas small models or batched cloud requests handle parallelization well.
 
-## 🚀 Project Overview
+## 📱 Social Media Strategy & Post Generation
+When drafting or refining posts for X (Twitter) or LinkedIn, act as a Tech/AI Social Media Strategist and automatically append a "Tags & Optimization" section at the end.
+- **X (Twitter) Rules:** Exactly 2 hashtags at the very end (1 broad like #BuildInPublic, 1 niche like #AIAutomation or #DataEngineering).
+- **LinkedIn Rules:** Exactly 3-5 hashtags (mixing industry-specific and professional growth). Suggest 1-2 contextually relevant influential accounts or Company Pages to @mention to increase reach.
+- **Optimization:** NEVER use generic tags (e.g., #Happy, #Work). Prioritize tags used by the #BuildInPublic and #AI communities. Maintain a professional yet engaging tone for LinkedIn.
+
+## � Project Overview
 Building a highly advanced, end-to-end AI job application automation pipeline:
 1. **Sourcing:** `linkedin_scraper.py` (Playwright-based, handles logins, pagination, and seen-job tracking).
 2. **Filtering:** AI-powered matching scripts to evaluate raw job descriptions against a strict Candidate Profile with specific "Dealbreakers".
@@ -113,6 +119,12 @@ To make the system more robust and token-efficient, we adapted several patterns 
    - Shifted to a web-based architecture: The candidate's master resume is now a simple `base_resume.md` file.
    - `tailor_resume.py` uses Gemini to rewrite the markdown summary and bullet points, outputs raw HTML, injects it into a CSS-styled `cv-template.html`, and uses Playwright's headless Chromium to instantly print an ATS-optimized, pixel-perfect PDF.
    - **PDF Rendering Fix:** Added Regex extraction and template validation to `tailor_resume.py` to prevent "empty white pages" caused by LLMs hallucinating `<html>`/`<body>` wrapper tags, or the HTML template losing its `{{content}}` placeholder.
-4. **Sourcing Optimizations:** Upgraded `linkedin_scraper.py` to use exact phrase matching (`%22`) in the URL, widened the search window to 3 days (`r259200`), added a zero-token `is_title_relevant` Python gatekeeper, and implemented an Applicant Cap logic to immediately drop jobs with >100 applicants, ensuring API tokens are only spent on high-quality, low-competition roles.
-5. **Goal-Oriented Orchestrator:** Upgraded `main.py` into a robust `while` loop that reads `Job_Applications_Tracker.csv` and repeatedly runs the pipeline (up to 4 times) until the daily quota of 50 successful applications is met. Replaced `sys.exit(1)` with `return False` so single-stage crashes don't kill the looping agent.
-6. **Directory Cleanup:** Migrated all active code to `/Users/bitanbanerjee/Coding/GitHub_Repos/AiAutomation/` to properly version control the project via Git while ignoring ephemeral data and environment variables.
+4. **Sourcing Optimizations:** Upgraded `linkedin_scraper.py` to use exact phrase matching (`%22`) in the URL, widened the search window to 3 days (`r259200`), added a zero-token `is_title_relevant` Python gatekeeper, and implemented an Applicant Cap logic to immediately drop jobs with >100 applicants.
+5. **Goal-Oriented Orchestrator:** Upgraded `main.py` into a robust `while` loop that reads `Job_Applications_Tracker.csv` and repeatedly runs the pipeline (up to 4 times) until the daily quota of 50 successful applications is met.
+6. **Application Quarantine:** Added a safety mechanism to `main.py` loop that intercepts `matched_jobs.json` before deletion, saving any jobs missing the `"status": "applied"` tag to a permanent `failed_applications.json` file so tricky forms aren't lost between loops.
+7. **Directory Cleanup:** Migrated all active code to `/Users/bitanbanerjee/Coding/GitHub_Repos/AiAutomation/` to properly version control the project via Git while ignoring ephemeral data and environment variables.
+8. **Naukri Multi-Platform Integration:** Abstracted the sourcing and application stages in `main.py` to allow swapping between LinkedIn and Naukri. Built `naukri_scraper.py` and `naukri_auto_apply.py` stubs to test the pipeline (bypassing the PDF tailoring step) using the existing agnostic Gemini matching and CSV logging engine.
+9. **Hub and Spoke Architecture:** Fully decoupled LinkedIn and Naukri pipelines in `main.py` (`run_linkedin_pipeline` and `run_naukri_pipeline`). Parameterized all core utilities (`match_job_gemini.py`, `tailor_resume.py`, etc.) to accept dynamic `scraped_path` and `matched_path` arguments, ensuring perfect state isolation.
+10. **Multi-Key Fallback Router:** Upgraded all AI scripts to accept multiple API keys (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`, etc.). If one account hits the hard 1,500 RPD free-tier limit, the router automatically swaps to the next key. Added hard exceptions when all keys are exhausted to halt the pipeline and prevent silent data loss.
+11. **Static Markdown Logger:** Upgraded `TeeLogger` to simultaneously output to a static `latest_run.md` file in the root directory, allowing the AI coding assistant to read crash logs automatically without manual copy-pasting.
+12. **Early Score Rejection:** Moved the `>= 80` score threshold directly into Stage 2 (`match_job_gemini.py`) so low-scoring jobs are rejected immediately, saving API tokens that would have been wasted tailoring PDFs.

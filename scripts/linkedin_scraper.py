@@ -88,8 +88,12 @@ def slow_scroll(page, scrolls=10):
         }""")
         time.sleep(random.uniform(1.5, 2.5))
 
-def scrape_linkedin_jobs(keyword, location, max_pages, max_jobs):
+def scrape_linkedin_jobs(keyword, location, max_pages, max_jobs, output_file=JOBS_FILE):
     seen_jobs = load_seen_jobs()
+    
+    # Create a set of (company, title) to prevent applying to identical roles posted in multiple cities
+    seen_roles = set((v.get('company'), v.get('title')) for v in seen_jobs.values())
+    
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         context = browser.new_context(
@@ -134,6 +138,10 @@ def scrape_linkedin_jobs(keyword, location, max_pages, max_jobs):
             card_count = cards.count()
             print(f"    🔍 Found {card_count} job cards on this page.")
             
+            if card_count == 0:
+                print("  ⚠️ No more jobs found. Stopping pagination.")
+                break
+            
             for i in range(card_count):
                 if len(all_jobs) >= max_jobs: break
                 try:
@@ -156,6 +164,10 @@ def scrape_linkedin_jobs(keyword, location, max_pages, max_jobs):
 
                     if job_url in seen_jobs:
                         print(f"  ⏭️ Skipped: Already seen {title} at {company}")
+                        continue
+                        
+                    if (company, title) in seen_roles:
+                        print(f"  ⏭️ Skipped: Duplicate role spam {title} at {company}")
                         continue
                     
                     card.scroll_into_view_if_needed()
@@ -197,14 +209,15 @@ def scrape_linkedin_jobs(keyword, location, max_pages, max_jobs):
                     })
                     
                     seen_jobs[job_url] = {"title": title, "company": company, "seen_at": datetime.now().isoformat()}
+                    seen_roles.add((company, title))
                     print(f"  ✅ Scraped: {title} at {company}")
                 except Exception as e:
                     error_msg = str(e).split('\n')[0]
                     print(f"  ⚠️ Error scraping card {i}: {error_msg}")
                     continue
 
-        os.makedirs(os.path.join(BASE_DIR, 'data'), exist_ok=True)
-        with open(JOBS_FILE, "w") as f:
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        with open(output_file, "w") as f:
             json.dump({"jobs": all_jobs}, f, indent=2)
         with open(SEEN_JOBS_FILE, "w") as f:
             json.dump(seen_jobs, f, indent=2)

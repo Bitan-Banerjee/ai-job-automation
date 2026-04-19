@@ -7,11 +7,10 @@ from google import genai
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 
-try:
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-except Exception as e:
-    print(f"Failed to initialize Gemini Client: {e}")
-    client = None
+api_keys = []
+for key_name in ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"]:
+    if os.getenv(key_name):
+        api_keys.append(os.getenv(key_name).strip())
 
 SCRAPED_PATH = os.path.join(BASE_DIR, 'data', 'jobs.json')
 MATCHED_PATH = os.path.join(BASE_DIR, 'data', 'matched_jobs.json')
@@ -29,8 +28,8 @@ def passes_basic_filter(title):
     return True
 
 def evaluate_job_batch(batch_jobs, profile_data):
-    if not client:
-        return {}
+    if not api_keys:
+        raise Exception("No Gemini API keys found in .env file.")
         
     # Create a compact payload for the AI to read
     jobs_payload = []
@@ -72,37 +71,40 @@ def evaluate_job_batch(batch_jobs, profile_data):
     """
     
     fallback_models = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest']
-    for model_name in fallback_models:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt
-            )
-            text = response.text.strip()
-            if text.startswith("```json"): text = text[7:-3].strip()
-            elif text.startswith("```"): text = text[3:-3].strip()
-            return json.loads(text)
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                print(f"  ⚠️ 429 Rate Limit hit on {model_name}. Switching to next model...")
-                continue
-            elif "404" in error_str or "NOT_FOUND" in error_str:
-                print(f"  ⚠️ Model {model_name} not found. Switching to next model...")
-                continue
-            elif "503" in error_str or "UNAVAILABLE" in error_str:
-                print(f"  ⚠️ 503 Service Unavailable on {model_name}. Switching to next model...")
-                continue
-            else:
-                print(f"  ⚠️ API Error on batch with {model_name}: {error_str}")
-                return {}
-    print("  ❌ All fallback models exhausted due to rate limits.")
-    return {}
+    
+    for key_idx, api_key in enumerate(api_keys):
+        client = genai.Client(api_key=api_key)
+        for model_name in fallback_models:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
+                text = response.text.strip()
+                if text.startswith("```json"): text = text[7:-3].strip()
+                elif text.startswith("```"): text = text[3:-3].strip()
+                return json.loads(text)
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                    print(f"  ⚠️ 429 Rate Limit hit on {model_name} (Key {key_idx + 1}). Switching...")
+                    continue
+                elif "404" in error_str or "NOT_FOUND" in error_str:
+                    print(f"  ⚠️ Model {model_name} not found. Switching...")
+                    continue
+                elif "503" in error_str or "UNAVAILABLE" in error_str:
+                    print(f"  ⚠️ 503 Service Unavailable on {model_name} (Key {key_idx + 1}). Switching...")
+                    continue
+                else:
+                    print(f"  ⚠️ API Error on batch with {model_name} (Key {key_idx + 1}): {error_str}")
+                    continue
+                    
+    raise Exception("Gemini API limits exhausted across all available keys. Halting to prevent data loss.")
 
-def match_jobs_batched():
+def match_jobs_batched(scraped_path=SCRAPED_PATH, matched_path=MATCHED_PATH):
     start_time = time.time()
-    if not os.path.exists(SCRAPED_PATH):
-        print(f"❌ Missing {SCRAPED_PATH}.")
+    if not os.path.exists(scraped_path):
+        print(f"❌ Missing {scraped_path}.")
         return
         
     if not os.path.exists(PROFILE_PATH):
@@ -117,10 +119,10 @@ def match_jobs_batched():
         return
         
     try:
-        with open(SCRAPED_PATH, 'r') as f:
+        with open(scraped_path, 'r') as f:
             jobs = json.load(f).get('jobs', [])
     except json.JSONDecodeError:
-        print(f"❌ Error: {SCRAPED_PATH} is empty or contains invalid JSON.")
+        print(f"❌ Error: {scraped_path} is empty or contains invalid JSON.")
         return
         
     # Pre-filter to save API calls
@@ -152,10 +154,14 @@ def match_jobs_batched():
                     score = 0
                 
                 if is_match:
-                    print(f"  ✅ MATCHED (Score: {score}): {company} - {title}")
-                    print(f"     └ 📝 {reason}")
-                    batch[idx]['ai_score'] = score
-                    approved_jobs.append(batch[idx])
+                    if score >= 80:
+                        print(f"  ✅ MATCHED (Score: {score}): {company} - {title}")
+                        print(f"     └ 📝 {reason}")
+                        batch[idx]['ai_score'] = score
+                        approved_jobs.append(batch[idx])
+                    else:
+                        print(f"  ❌ REJECTED (Low Score: {score}): {company} - {title}")
+                        print(f"     └ 📝 {reason}")
                 else:
                     print(f"  ❌ REJECTED (Score: {score}): {company} - {title}")
                     print(f"     └ 📝 {reason}")
@@ -165,11 +171,11 @@ def match_jobs_batched():
             print(f"  ⏳ Sleeping for {DELAY_BETWEEN_BATCHES}s to respect API rate limits...")
             time.sleep(DELAY_BETWEEN_BATCHES)
             
-    os.makedirs(os.path.dirname(MATCHED_PATH), exist_ok=True)
-    with open(MATCHED_PATH, 'w') as f:
+    os.makedirs(os.path.dirname(matched_path), exist_ok=True)
+    with open(matched_path, 'w') as f:
         json.dump({"approved_jobs": approved_jobs}, f, indent=4)
         
-    print(f"\n🎉 Done! Approved {len(approved_jobs)} jobs. Saved to {MATCHED_PATH}")
+    print(f"\n🎉 Done! Approved {len(approved_jobs)} jobs. Saved to {matched_path}")
     print(f"⏱️ Total runtime: {time.time() - start_time:.2f} seconds")
 
 if __name__ == "__main__":

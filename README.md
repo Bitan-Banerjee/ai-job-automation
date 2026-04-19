@@ -1,4 +1,4 @@
-# 🚀 AI Job Application Pipeline
+# AI Job Application Pipeline
 
 An end-to-end, fully autonomous AI agent that scrapes, filters, tailors, and applies to jobs on LinkedIn. 
 
@@ -6,7 +6,7 @@ Built with **Python**, **Playwright**, and **Google Gemini**, this pipeline does
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 - **Goal-Oriented Looping Agent:** Tell it to get 50 applications today, and it will continuously scrape, filter, and apply until it hits the target.
 - **Zero-Token Sourcing Gatekeepers:** Smart Python regex filters instantly drop junk roles (e.g., Senior, QA, Frontend) and saturated jobs (>100 applicants) *before* wasting AI tokens.
@@ -17,7 +17,7 @@ Built with **Python**, **Playwright**, and **Google Gemini**, this pipeline does
 
 ---
 
-## ⚙️ Prerequisites & Installation
+## Prerequisites & Installation
 
 You will need Python 3.10+ and a Google AI Studio API Key (Free Tier is fully supported due to built-in fallback routing).
 
@@ -41,7 +41,7 @@ playwright install chromium
 
 ---
 
-## 🛠️ Configuration
+## Configuration
 
 Before running the bot, you must set up your credentials and personal data.
 
@@ -51,6 +51,8 @@ Create a `.env` file in the root directory:
 LINKEDIN_EMAIL="your.email@example.com"
 LINKEDIN_PASSWORD="your_password"
 GEMINI_API_KEY="your_google_gemini_api_key"
+# Optional: Add backup keys to automatically bypass daily free-tier rate limits
+GEMINI_API_KEY_2="your_second_gemini_key"
 ```
 
 ### 2. Configure Your Profile
@@ -75,7 +77,7 @@ Edit `base_resume.md` in the root directory. Put your actual, highly-detailed ca
 
 ---
 
-## 🚀 Usage
+## Usage
 
 The entire pipeline is orchestrated by `main.py`.
 
@@ -105,7 +107,7 @@ To run the bot completely hands-free every morning at 9:00 AM, add this to your 
 
 ---
 
-## 🧠 How It Works (The 5 Stages)
+## How It Works (The 5 Stages)
 
 ### [STAGE 1] Sourcing (`linkedin_scraper.py`)
 *   Logs into LinkedIn and searches for your target role using exact phrase matching (e.g., `"%22Data Engineer%22"`).
@@ -139,7 +141,7 @@ To run the bot completely hands-free every morning at 9:00 AM, add this to your 
 
 ---
 
-## 📂 Directory Structure
+## Directory Structure
 
 ```text
 AiAutomation/
@@ -169,5 +171,5 @@ AiAutomation/
 
 ---
 
-## ⚠️ Disclaimer
+## Disclaimer
 This tool automates interactions with LinkedIn. Please use responsibly and ensure you comply with LinkedIn's Terms of Service. The AI generates application answers and resumes on your behalf; you should routinely audit `job_qa_registry.json` and the generated PDFs to ensure absolute accuracy.

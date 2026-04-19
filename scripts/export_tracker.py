@@ -7,12 +7,12 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MATCHED_PATH = os.path.join(BASE_DIR, 'data', 'matched_jobs.json')
 OUTPUT_FILE = os.path.join(BASE_DIR, 'Job_Applications_Tracker.csv')
 
-def export_to_excel():
-    if not os.path.exists(MATCHED_PATH):
-        print(f"❌ Missing {MATCHED_PATH}. No jobs to export.")
+def export_to_excel(matched_path=MATCHED_PATH):
+    if not os.path.exists(matched_path):
+        print(f"❌ Missing {matched_path}. No jobs to export.")
         return
         
-    with open(MATCHED_PATH, 'r') as f:
+    with open(matched_path, 'r') as f:
         data = json.load(f)
         jobs = data.get('approved_jobs', [])
         
