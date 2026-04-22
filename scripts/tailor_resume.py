@@ -17,6 +17,7 @@ for key_name in ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"]:
 
 MATCHED_PATH = os.path.join(BASE_DIR, 'data', 'matched_jobs.json')
 BASE_RESUME_PATH = os.path.join(BASE_DIR, 'base_resume.md')
+GENERIC_RESUME_PATH = os.path.join(BASE_DIR, 'resume.docx')
 TEMPLATE_PATH = os.path.join(BASE_DIR, 'templates', 'cv-template.html')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'outputs', 'resumes')
 
@@ -113,19 +114,29 @@ def tailor_resumes(matched_path=MATCHED_PATH):
         print(f"❌ FATAL: {TEMPLATE_PATH} is empty or missing the '{{content}}' placeholder tag!")
         return
 
-    print(f"📄 Found {len(jobs)} approved jobs. Tailoring resumes...")
+    print(f"📄 Found {len(jobs)} approved jobs. Processing resumes...")
     
     for i, job in enumerate(jobs):
+        company = job.get('company', 'Unknown')
+        match_type = job.get('match_type', 'direct')
         score = job.get('ai_score', 0)
+        
+        if match_type == 'potential':
+            print(f"\n  ℹ️ Potential match ({score}) for {company}. Using generic resume.")
+            if os.path.exists(GENERIC_RESUME_PATH):
+                job['tailored_resume_path'] = GENERIC_RESUME_PATH
+            else:
+                print(f"  ⚠️ Generic resume not found at {GENERIC_RESUME_PATH}!")
+            continue
+
         if score < 80:
-            print(f"\n  ⏭️  Skipping tailoring for {job.get('company', 'Unknown')}: Score ({score}) is below 80.")
+            print(f"\n  ⏭️ Skipping tailoring for {company}: Score ({score}) is below 80 and match_type is '{match_type}'.")
             continue
             
-        company = job.get('company', 'Unknown')
         safe_company = "".join(c if c.isalnum() else "_" for c in company).strip("_")
         pdf_path = os.path.join(daily_output_dir, f"Resume_{safe_company}.pdf")
         
-        print(f"\n  ✍️  Tailoring for {company}...")
+        print(f"\n  ✍️  Tailoring for {company} (Direct Match, Score: {score})...")
         tailored_html = generate_tailored_html(job.get('title'), job.get('description'), base_resume)
         
         if tailored_html:
@@ -144,7 +155,7 @@ def tailor_resumes(matched_path=MATCHED_PATH):
             
     with open(matched_path, 'w') as f:
         json.dump({"approved_jobs": jobs}, f, indent=4)
-    print(f"\n🎉 Resume tailoring complete!")
+    print(f"\n🎉 Resume processing complete!")
 
 if __name__ == "__main__":
     tailor_resumes()

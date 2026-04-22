@@ -17,6 +17,7 @@ JOBS_FILE = os.path.join(BASE_DIR, 'data', 'jobs.json')
 SESSION_FILE = os.path.join(BASE_DIR, 'data', 'naukri_session.json')
 SEEN_JOBS_FILE = os.path.join(BASE_DIR, 'data', 'naukri_seen_jobs.json')
 COMPANY_BEHAVIOR_FILE = os.path.join(BASE_DIR, 'data', 'naukri_company_behavior.json')
+STATE_FILE = os.path.join(BASE_DIR, 'data', 'naukri_state.json')
 
 def scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=25, output_file=JOBS_FILE):
     # Load memory to prevent duplicates
@@ -32,7 +33,16 @@ def scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=25, o
         with open(COMPANY_BEHAVIOR_FILE, "r") as f:
             company_behavior = json.load(f)
     
-    print(f"🌐 Booting up Naukri Scraper for '{keyword}'...")
+    # Load last page state
+    state = {"last_page": 0}
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+        except: pass
+    
+    start_page = state.get("last_page", 0) + 1
+    print(f"🌐 Booting up Naukri Scraper for '{keyword}' (Resuming from Page {start_page})...")
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -64,9 +74,11 @@ def scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=25, o
         formatted_keyword = keyword.lower().replace(' ', '-')
         formatted_location = location.lower().replace(' ', '-')
         all_jobs = []
-        max_pages = (max_jobs // 20) + 2
+        max_pages_to_scrape = (max_jobs // 20) + 2
         
-        for page_num in range(1, max_pages + 1):
+        last_successful_page = state.get("last_page", 0)
+        
+        for page_num in range(start_page, start_page + max_pages_to_scrape):
             if len(all_jobs) >= max_jobs: break
             
             # Build URL: e.g., https://www.naukri.com/data-engineer-jobs-in-india-2?jobAge=3&sort=r
@@ -82,8 +94,11 @@ def scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=25, o
             print(f"    🔍 Found {card_count} job cards on this page.")
             
             if card_count == 0:
-                print("  ⚠️ No more jobs found. Stopping pagination.")
+                print("  ⚠️ No more jobs found. Resetting page state for next run.")
+                last_successful_page = 0 
                 break
+            
+            last_successful_page = page_num
                 
             # Step 1: Extract URLs to avoid stale elements
             job_links = []
@@ -132,6 +147,11 @@ def scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=25, o
                     desc_locator = page.locator(".job-desc, .dang-inner-html, div[class*='job-desc'], section[class*='job-desc']").first
                     desc_locator.wait_for(timeout=5000)
                     
+                    # Filter out jobs that have already been applied to
+                    if page.locator("text='Already Applied', button:has-text('Already Applied'), button:has-text('Applied')").is_visible():
+                        print(f"  ⏭️ Skipped: Already applied to {job_info['title']}")
+                        continue
+
                     # Filter out jobs that redirect to external company portals and update behavior matrix
                     apply_btn = page.locator("button:has-text('Apply'), a:has-text('Apply')").first
                     if apply_btn.is_visible(timeout=2000):
@@ -165,8 +185,12 @@ def scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=25, o
         with open(COMPANY_BEHAVIOR_FILE, "w") as f:
             json.dump(company_behavior, f, indent=2)
             
+        # Update page state for next loop
+        with open(STATE_FILE, "w") as f:
+            json.dump({"last_page": last_successful_page, "last_run": datetime.now().isoformat()}, f)
+            
         browser.close()
-        print(f"💾 Done! Scraped {len(all_jobs)} jobs from Naukri.")
+        print(f"💾 Done! Scraped {len(all_jobs)} jobs from Naukri (Current Page: {last_successful_page}).")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scrape Naukri job postings.")

@@ -24,20 +24,39 @@ def get_batch_answers_from_gemini(questions_list, registry):
     
     print(f"    🧠 Batching {len(questions_list)} new questions to Gemini...")
     
+    # Add profile context if available
+    profile = {}
+    profile_path = os.path.join(BASE_DIR, 'config', 'profile.json')
+    if os.path.exists(profile_path):
+        with open(profile_path, 'r') as f: profile = json.load(f)
+
     prompt = f"""
-    You are filling out a job application.
-    User Data: {json.dumps(registry)}
+    You are filling out a job application. 
+    User Profile: {json.dumps(profile)}
+    Registry: {json.dumps(registry)}
     
     Answer the following list of questions:
     {json.dumps(questions_list)}
     
     RULES:
-    1. You MUST return ONLY a valid JSON dictionary. No markdown, no code blocks, no other text.
-    2. Keys MUST be the EXACT question strings provided. Values MUST be the exact answers.
-    3. STRICT NUMBER RULE: For durations or experience, return ONLY the integer or decimal.
-    4. MULTIPLE CHOICE: If a question includes "(Options: ...)", the value MUST be the exact text of one of those options.
-    5. FALLBACK TO ZERO: If a specific skill is asked for that is NOT in the User Data, return "0". 
-    6. MAPPING: AWS services -> 'years_experience_aws'. RDBMS -> 'years_experience_sql'.
+    1. You MUST return ONLY a valid JSON dictionary. 
+    2. Keys MUST be the EXACT question strings provided.
+    
+    **YEARS OF EXPERIENCE RULE**: 
+    - The candidate has **4 years** of experience in Data Engineering / AWS / Python / SQL.
+    - **ANALOGOUS SKILLS**: If asked for experience in Azure, GCP, Databricks, Snowflake, or Informatica, TREAT IT AS AWS/GLUE/ETL experience. 
+    - Example: "Years of experience in Azure?" -> Answer: "4".
+    - Example: "Experience with Databricks?" -> Answer: "4" (mapping from Glue/PySpark).
+    - NEVER output "0" for these technical skills.
+    
+    **FORMATTING RULES**:
+    - If the question asks for years/months and expects a number (or is a numeric field), return ONLY the integer (e.g., "4" not "4 years").
+    - If the question is "Yes/No", return "Yes".
+    
+    **MULTIPLE CHOICE**: 
+    - If a question includes "(Options: ...)", the value MUST be the exact text of one of those options. Choose the most positive/experienced option.
+    
+    3. Be consistent with the Registry.
     """
     
     fallback_models = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest']
@@ -109,7 +128,16 @@ def handle_questions(page, registry):
     for field in page.query_selector_all(".artdeco-modal input[type='text'], .artdeco-modal input[type='number'], .artdeco-modal textarea"):
         label = page.query_selector(f"label[for='{field.get_attribute('id')}']")
         q_text = label.inner_text().strip() if label else ""
-        if q_text in registry: field.fill(str(registry[q_text]))
+        if q_text in registry:
+            field.fill(str(registry[q_text]))
+            time.sleep(0.5)
+            # Attempt to click autocomplete suggestions (Mandatory for LinkedIn Location fields)
+            try:
+                dropdown_opt = page.locator(".search-typeahead-v2__hit, .basic-typeahead__result, .artdeco-typeahead__result").first
+                if dropdown_opt.is_visible(timeout=500):
+                    dropdown_opt.click()
+                    time.sleep(0.5)
+            except: pass
 
     for dropdown in page.query_selector_all(".artdeco-modal select"):
         label = page.query_selector(f"label[for='{dropdown.get_attribute('id')}']")
@@ -156,6 +184,7 @@ def auto_apply(matched_path=MATCHED_PATH):
             print(f"\n🚀 Processing: {job.get('company', 'Unknown')} (Score: {score})")
             if score < 80:
                 print(f"  ⏭️  Skipping: AI Score is below the 80 threshold.")
+                job['status'] = 'skipped_low_score'
                 continue
 
             try:
@@ -212,14 +241,20 @@ def auto_apply(matched_path=MATCHED_PATH):
                 print(f"  ❌ Easy Apply button genuinely not found. Moving on.")
                 continue
 
-            # We removed the strict modal wait block that was crashing things.
-            # We let the main loop handle the modal safely.
+            # Wait for the modal to actually appear before starting the interaction loop
+            try:
+                page.locator(".artdeco-modal").first.wait_for(state="visible", timeout=8000)
+            except Exception:
+                print("  ⚠️ Modal did not appear (might be an external redirect or slow connection). Skipping.")
+                continue
 
             for loop_count in range(10):
                 time.sleep(2)
                 
                 modal = page.locator(".artdeco-modal")
                 if not modal.is_visible():
+                    if loop_count > 0:
+                        print("  ⚠️ Modal closed unexpectedly.")
                     break
                     
                 handle_questions(page, registry)
@@ -238,6 +273,18 @@ def auto_apply(matched_path=MATCHED_PATH):
                     print("  ⚠️ Form validation failing. Skipping job to avoid infinite loop.")
                     break
 
+                # Scroll down the modal content to ensure Next/Submit buttons are visible
+                try:
+                    page.evaluate("""() => {
+                        const modalContent = document.querySelector('.artdeco-modal__content');
+                        if (modalContent) modalContent.scrollTo(0, modalContent.scrollHeight);
+                    }""")
+                    time.sleep(0.5)
+                except: pass
+                
+                print("    ⏳ Holding form for 3 seconds for visual review...")
+                time.sleep(3)
+
                 # Back to the explicit text-based button matching that worked!
                 next_btn = modal.locator("button:has-text('Next')").first
                 review_btn = modal.locator("button:has-text('Review')").first
@@ -245,7 +292,7 @@ def auto_apply(matched_path=MATCHED_PATH):
 
                 if submit_btn.is_visible():
                     print(f"  🏁 Finalizing application for {job['company']}...")
-                    submit_btn.click()
+                    submit_btn.click(force=True)
                     time.sleep(3)
                     print(f"  ✅ SUCCESS! Application fully submitted.")
                     job['status'] = 'applied'
@@ -253,10 +300,10 @@ def auto_apply(matched_path=MATCHED_PATH):
                         json.dump({"approved_jobs": jobs}, f, indent=4)
                     break
                 elif review_btn.is_visible():
-                    review_btn.click()
+                    review_btn.click(force=True)
                     print("    ➡️ Clicked 'Review'")
                 elif next_btn.is_visible():
-                    next_btn.click()
+                    next_btn.click(force=True)
                     print("    ➡️ Clicked 'Next'")
                 else:
                     print("  ⚠️ Could not find Next/Review/Submit buttons. Exiting modal.")

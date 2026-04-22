@@ -55,13 +55,22 @@ def evaluate_job_batch(batch_jobs, profile_data):
     CRITICAL DEALBREAKERS (Reject if ANY are true):
     {dealbreakers_text}
 
+    SKILL FLEXIBILITY RULES:
+    1. Cloud Platforms: AWS, Azure, and GCP are considered analogous. If a job requires Azure but the candidate has AWS, it is a "potential" match.
+    2. Data Tools: Glue and Databricks are considered analogous. 
+    3. Experience: Years of experience are strict dealbreakers if specified in dealbreakers.
+
     Evaluate the following batch of jobs. 
-    Return ONLY a valid JSON object mapping the "id" to an object containing your step-by-step reasoning against the dealbreakers, a "score" from 0 to 100 based on skill alignment, and the final "match" boolean.
-    
+    Return ONLY a valid JSON object mapping the "id" to an object containing:
+    - "reasoning": Step-by-step reasoning.
+    - "score": 0-100 based on skill alignment.
+    - "match": boolean (true/false).
+    - "match_type": "direct" (strong alignment) or "potential" (analogous skills like AWS vs Azure).
+
     Format exactly like this:
     {{
-      "0": {{"reasoning": "Job needs 2-4 years exp. Mentions AWS.", "score": 85, "match": true}},
-      "1": {{"reasoning": "Job requires 8+ years experience, violating DB1.", "score": 0, "match": false}}
+      "0": {{"reasoning": "...", "score": 85, "match": true, "match_type": "direct"}},
+      "1": {{"reasoning": "...", "score": 75, "match": true, "match_type": "potential"}}
     }}
 
     Jobs to evaluate:
@@ -148,16 +157,19 @@ def match_jobs_batched(scraped_path=SCRAPED_PATH, matched_path=MATCHED_PATH):
                     is_match = str(data.get("match", "false")).lower() == "true"
                     reason = data.get("reasoning", "No reasoning provided.")
                     score = data.get("score", 0)
+                    match_type = data.get("match_type", "direct")
                 else:
                     is_match = str(data).lower() == "true"
                     reason = "No reasoning provided."
                     score = 0
+                    match_type = "direct"
                 
                 if is_match:
-                    if score >= 80:
-                        print(f"  ✅ MATCHED (Score: {score}): {company} - {title}")
+                    if score >= 70: # Lowered threshold slightly for potential matches
+                        print(f"  ✅ MATCHED ({match_type.upper()}, Score: {score}): {company} - {title}")
                         print(f"     └ 📝 {reason}")
                         batch[idx]['ai_score'] = score
+                        batch[idx]['match_type'] = match_type
                         approved_jobs.append(batch[idx])
                     else:
                         print(f"  ❌ REJECTED (Low Score: {score}): {company} - {title}")

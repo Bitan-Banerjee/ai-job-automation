@@ -1,7 +1,9 @@
 {
   "target_role": "Data Engineer",
-  "candidate_experience": "3.6 years (Open to roles requiring 0 to 5 years of experience)",
-  "core_skills": ["Python", "SQL", "PySpark", "AWS (Lambda, Step Functions, Glue, S3)", "ETL/ELT"],
+  "candidate_experience": "3.8 years (Open to roles requiring 0 to 5 years of experience)",
+  "notice_period": "30 days",
+  "serving_notice_period": "No",
+  "core_skills": ["Python", "SQL", "PySpark", "AWS (Lambda, Step Functions, Glue, S3)", "ETL/ELT", "Data Migration", "Data Warehousing"],
   "dealbreakers": [
     "DB1: Job strictly requires MORE than 5 years of experience (e.g., '6-10 Years'). Do not confuse company/founder experience with job requirements.",
     "DB2: Job requires the candidate to design, train, or build AI/ML models or perform advanced Statistical/Mathematical modeling. (NOTE: Building data pipelines, cleaning data, or writing ETL workflows to support AI teams is a PERFECT match and should NOT be rejected).",

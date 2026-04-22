@@ -5,6 +5,8 @@ import argparse
 import csv
 import json
 from datetime import datetime
+import atexit
+import signal
 
 try:
     from linkedin_scraper import scrape_linkedin_jobs
@@ -13,10 +15,81 @@ try:
     from auto_apply import auto_apply
     from naukri_auto_apply import naukri_apply
     from tailor_resume import tailor_resumes
-    from export_tracker import export_to_excel
+    from utils.export_tracker import export_to_excel
 except ImportError as e:
     print(f"❌ Failed to import a necessary script. Make sure all scripts are in the /scripts folder. Error: {e}")
     sys.exit(1)
+
+# --- SINGLETON LOCK LOGIC ---
+LOCK_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.lock")
+
+def acquire_lock():
+    """Ensure only one instance of the script runs at a time."""
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE, "r") as f:
+                old_pid = int(f.read().strip())
+            # Check if process with this PID is actually running
+            os.kill(old_pid, 0)
+            print(f"⚠️  Another instance is already running (PID: {old_pid}). Exiting.")
+            sys.exit(0)
+        except (OSError, ValueError, ProcessLookupError):
+            # Process is dead or file is corrupt, stale lock
+            os.remove(LOCK_FILE)
+
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+def release_lock():
+    """Remove the lock file on exit."""
+    if os.path.exists(LOCK_FILE):
+        os.remove(LOCK_FILE)
+
+atexit.register(release_lock)
+
+# Handle signals to ensure lock is released even if killed (SIGTERM)
+def signal_handler(sig, frame):
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+# ----------------------------
+
+def inject_logs_to_context():
+    """Automatically injects the last 50 lines of the run log into the AI's memory on exit."""
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    latest_log_path = os.path.join(base_dir, "latest_run.md")
+    context_path = os.path.join(base_dir, "AI_CONTEXT.md")
+    
+    if not os.path.exists(latest_log_path) or not os.path.exists(context_path):
+        return
+        
+    try:
+        with open(latest_log_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            last_lines = lines[-50:] if len(lines) > 50 else lines
+            log_content = "".join(last_lines)
+            if not log_content.endswith("\n"): log_content += "\n"
+            
+        with open(context_path, "r", encoding="utf-8") as f:
+            context_content = f.read()
+            
+        marker = "## 🚨 Latest Run Logs"
+        if marker in context_content:
+            context_content = context_content.split(marker)[0].strip()
+            
+        with open(context_path, "w", encoding="utf-8") as f:
+            f.write(f"{context_content}\n\n{marker}\n```text\n{log_content}```\n")
+    except Exception:
+        pass # Fail silently on exit so we don't crash the teardown process
+
+atexit.register(inject_logs_to_context)
+
+def force_close_browsers():
+    """Forcefully kills any lingering Chromium browser windows via a short bash command."""
+    os.system('pkill -f "Chromium" > /dev/null 2>&1')
+
+atexit.register(force_close_browsers)
 
 class TeeLogger(object):
     def __init__(self, stream, *files):
@@ -81,10 +154,51 @@ def get_todays_application_count():
         pass
     return count
 
+def quarantine_failed_jobs(base_dir):
+    failed_path = os.path.join(base_dir, 'data', 'failed_applications.json')
+    for prefix in ['linkedin', 'naukri']:
+        matched_path = os.path.join(base_dir, 'data', f'{prefix}_matched_jobs.json')
+        if os.path.exists(matched_path) and os.path.getsize(matched_path) > 0:
+            try:
+                with open(matched_path, 'r') as f:
+                    data = json.load(f)
+                    approved_jobs = data.get('approved_jobs', [])
+                
+                failed_jobs = [j for j in approved_jobs if j.get('status') not in ['applied', 'skipped_low_score']]
+                if failed_jobs:
+                    all_failed = []
+                    if os.path.exists(failed_path) and os.path.getsize(failed_path) > 0:
+                        try:
+                            with open(failed_path, 'r') as f:
+                                all_failed = json.load(f).get('failed_jobs', [])
+                        except: pass
+                    
+                    # Add only unique jobs by URL to prevent duplicates
+                    existing_urls = set(j.get('url', '') for j in all_failed)
+                    added = 0
+                    for fj in failed_jobs:
+                        if fj.get('url', '') not in existing_urls:
+                            all_failed.append(fj)
+                            existing_urls.add(fj.get('url', ''))
+                            added += 1
+
+                    if added > 0:
+                        with open(failed_path, 'w') as f:
+                            json.dump({"failed_jobs": all_failed}, f, indent=4)
+                        print(f"  📥 Quarantined {added} new failed/skipped {prefix} applications.")
+            except Exception as e:
+                print(f"  ⚠️ Failed to quarantine {prefix} jobs: {e}")
+
 def run_daily_quota_loop(target_quota=50, max_loops=4):
     print(f"\n🎯 DAILY QUOTA MODE ACTIVATED: Target {target_quota} Applications")
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
+    # Reset Naukri page state for a fresh daily run
+    naukri_state_path = os.path.join(base_dir, 'data', 'naukri_state.json')
+    if os.path.exists(naukri_state_path):
+        os.remove(naukri_state_path)
+        print("🧹 Reset Naukri page state for fresh run.")
+
     for attempt in range(1, max_loops + 1):
         current_count = get_todays_application_count()
         print(f"\n📊 Current Applications Today: {current_count} / {target_quota}")
@@ -100,28 +214,18 @@ def run_daily_quota_loop(target_quota=50, max_loops=4):
         print(f"\n🔄 --- PIPELINE LOOP {attempt}/{max_loops} (Attempting to find {remaining} more matches) ---")
         
         # Quarantine failed/skipped applications before wiping
-        failed_path = os.path.join(base_dir, 'data', 'failed_applications.json')
-        for prefix in ['linkedin', 'naukri']:
-            matched_path = os.path.join(base_dir, 'data', f'{prefix}_matched_jobs.json')
-            if os.path.exists(matched_path):
-                try:
-                    with open(matched_path, 'r') as f:
-                        approved_jobs = json.load(f).get('approved_jobs', [])
-                    
-                    failed_jobs = [j for j in approved_jobs if j.get('status') != 'applied']
-                    if failed_jobs:
-                        all_failed = []
-                        if os.path.exists(failed_path):
-                            with open(failed_path, 'r') as f:
-                                all_failed = json.load(f).get('failed_jobs', [])
-                        all_failed.extend(failed_jobs)
-                        with open(failed_path, 'w') as f:
-                            json.dump({"failed_jobs": all_failed}, f, indent=4)
-                        print(f"  📥 Quarantined {len(failed_jobs)} failed/skipped {prefix} applications.")
-                except Exception as e:
-                    print(f"  ⚠️ Failed to quarantine {prefix} jobs: {e}")
+        quarantine_failed_jobs(base_dir)
+        
+        # Check quota again
+        current_count = get_todays_application_count()
+        if current_count >= target_quota:
+            print("✅ Daily quota met! Shutting down gracefully.")
+            break
+            
+        remaining = target_quota - current_count
+        jobs_to_scrape = min(remaining * 8, 150)
 
-        # Wipe intermediate files to start fresh, but keep seen_jobs.json
+        # Wipe intermediate files to start fresh, but keep seen_jobs.json and naukri_state.json
         for prefix in ['linkedin', 'naukri']:
             for suffix in ['_jobs.json', '_matched_jobs.json']:
                 f_path = os.path.join(base_dir, 'data', f"{prefix}{suffix}")
@@ -131,23 +235,26 @@ def run_daily_quota_loop(target_quota=50, max_loops=4):
         # Run Naukri Pipeline
         naukri_success = run_naukri_pipeline(max_jobs=jobs_to_scrape, start_stage=1)
         
-        # Check quota again before running LinkedIn
-        current_count = get_todays_application_count()
-        if current_count >= target_quota:
-            print("✅ Daily quota met after Naukri! Skipping LinkedIn.")
-            break
-            
-        remaining = target_quota - current_count
-        jobs_to_scrape = min(remaining * 8, 150)
+        # Run LinkedIn Pipeline ONLY on Loop 1
+        if attempt == 1:
+            current_count = get_todays_application_count()
+            if current_count < target_quota:
+                remaining = target_quota - current_count
+                jobs_to_scrape = min(remaining * 8, 150)
+                run_linkedin_pipeline(max_jobs=jobs_to_scrape, start_stage=1)
+        else:
+            print("⏭️ Skipping LinkedIn scraping for loop > 1.")
         
-        # Run LinkedIn Pipeline
-        linkedin_success = run_linkedin_pipeline(max_jobs=jobs_to_scrape, start_stage=1)
-        
-        if not linkedin_success and not naukri_success:
-            print("⚠️ Both pipelines encountered critical errors. Resting for 60s before next attempt...")
+        if not naukri_success and (attempt > 1 or not linkedin_success):
+            print("⚠️ Pipeline encountered errors. Resting for 60s before next attempt...")
             time.sleep(60)
     else:
         print(f"\n⚠️ Reached max loops ({max_loops}). Did not hit quota. Resting until tomorrow.")
+        
+    print("\n📥 Quarantining any remaining failed applications from the final loop...")
+    quarantine_failed_jobs(base_dir)
+    
+    print("\n🧹 Final cleanup complete. (Retry logic decoupled. Run 'retry_failed.py' manually if needed.)")
 
 def determine_start_stage(prefix="linkedin"):
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -285,6 +392,8 @@ def run_naukri_pipeline(max_jobs=25, start_stage=1):
     return True
 
 if __name__ == "__main__":
+    acquire_lock()
+    
     parser = argparse.ArgumentParser(description="Run the AI Job Application Pipeline.")
     parser.add_argument("--jobs", type=int, default=25, help="Maximum number of jobs to scrape and process.")
     parser.add_argument("--target", type=int, default=50, help="Daily quota target for continuous looping.")
