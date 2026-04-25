@@ -12,6 +12,7 @@
 ## 🐛 Debugging Philosophy (Diagnose First)
 - **No Blind Fixes:** No assumptions on UI/locator failures.
 - **Evidence Collection:** Write diagnostic code (`page.screenshot()`, `page.content()`). Analyze before fix.
+- **LinkedIn Diagnostics:** `auto_apply.py` now automatically saves screenshots on failure (e.g., missing buttons, modal timeouts, validation errors) to `logs/screenshots/`.
 - **The Debugging Loop:** When a complex UI issue (like the Naukri Chatbot) is identified:
   1. Create/Update a standalone `debug_<platform>.py` script.
   2. Implement aggressive element dumping and logging.
@@ -130,7 +131,72 @@ Split into 4 Micro-Agents:
 11. **Static Logger:** `latest_run.md` for AI assistant.
 12. **Early Score Rejection:** Reject `< 80` score in Stage 2.
 
+## 📜 Core Mandates
+- **Approval Rule:** You MUST NOT perform any file modifications, code changes, or system updates without first presenting a technical strategy and obtaining explicit user approval. This applies regardless of task complexity.
+- **Reporting Rule:** Always provide the standard Pipeline Status Report after a run in the following tabular format. Counts must be based on a manual scan of the latest run logs to ensure accuracy and prevent double-counting.
+
+### 📊 Pipeline Status Report (YYYY-MM-DD)
+
+| Platform | Scraped (Unskipped) | AI Matched | Applied | Failed |
+| :--- | :---: | :---: | :---: | :---: |
+| **LinkedIn** | 0 | 0 | 0 | 0 |
+| **Naukri** | 0 | 0 | 0 | 0 |
+| **TOTAL** | **0** | **0** | **0** | **0** |
+
+**Notes:**
+- [List specific successes, failures, or platform-specific observations here]
+
+
 ## 🚨 Latest Run Logs
 ```text
-# Pipeline Run: 2026-04-20 10:28:05
+  ⏭️ Skipped (Irrelevant Title): Sr. DevOps Engineer and MLOps Engineer
+  ⏭️ Skipped (Irrelevant Title): Application Developer
+  ⏭️ Skipped (Irrelevant Title): Analyst-DIG-Jan-26 (General)
+  ⏭️ Skipped (Irrelevant Title): CT-NITRO-Experimental AI Engineer
+  ⏭️ Skipped: Already seen or duplicate Data scientist at Grid Dynamics
+  ⏭️ Skipped (Irrelevant Title): AI / ML Engineer
+  ⏭️ Skipped (Irrelevant Title): MLOps Engineer
+  ⏭️ Skipped (Irrelevant Title): Application Support Engineer
+  ⏭️ Skipped: 'Han Digital Solution' strictly uses external portals.
+  ⏭️ Skipped (Irrelevant Title): Software Development Engineer
+  ⏭️ Skipped (Irrelevant Title): AGBG Full Stack Engineer Manager
+  ⏭️ Skipped (Irrelevant Title): AGBG Full Stack Engineer Manager
+  ⏭️ Skipped: Already seen or duplicate Dataiku Developer at Leading Client
+  ⏭️ Skipped: Already seen or duplicate Data Scientist at Quest Global
+  ⏭️ Skipped (Irrelevant Title): Tech Lead/GCP Data Engineer/9+ Years/Pune/Hyderabad/Immediate joiners
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped (Irrelevant Title): DE-Technical Risk Analyst-GDSN02
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+📄 Scraping Naukri Page 36...
+    🔍 Found 20 job cards on this page.
+  ⏭️ Skipped: 'Birlasoft' strictly uses external portals.
+  ⏭️ Skipped (Irrelevant Title): Data Science Engineer Lead
+  ⏭️ Skipped: Already seen or duplicate Contract Hiring- Senior AI MLOps Engineer/Data Scientist at E Solutions
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: Already seen or duplicate Opening For Data Scientist role at Hyderabad Location at Resustainability
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: 'Accenture' strictly uses external portals.
+  ⏭️ Skipped: Already seen or duplicate Senior Engineer - CLT Data Management at Quest Global
+  ⏭️ Skipped: Already seen or duplicate Senior Engineer - CLT Data Management at Quest Global
+  ⏭️ Skipped: External application portal for Senior Data Architect AWS & Databricks
+  ⏭️ Skipped: External application portal for Sr Software Engineer II - Snowflake/Data fabric
+💾 Done! Scraped 1 jobs from Naukri (Current Page: 36).
+[STAGE 1/4] ✅ Scraping complete.
+
+[STAGE 2/4] 🧠 Filtering jobs with Gemini AI...
+🔍 Evaluating 1 jobs using Gemini Batched API (Batch Size: 10)...
+
+📦 Sending Batch 1 (1 jobs) to Gemini...
+  ⚠️ 429 Rate Limit hit on gemini-flash-latest (Key 1). Switching...
 ```

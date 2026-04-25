@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import argparse
 from auto_apply import auto_apply
 from naukri_auto_apply import naukri_apply
 from utils.export_tracker import export_to_excel
@@ -26,7 +27,7 @@ def load_safe_json(path):
             print(f"⚠️ Failed to parse {path}: {e}")
             return None
 
-def retry_failed_jobs():
+def retry_failed_jobs(linkedin_only=False, naukri_only=False):
     if not os.path.exists(FAILED_PATH):
         print("✅ No failed applications found.")
         return
@@ -42,10 +43,19 @@ def retry_failed_jobs():
     linkedin_jobs = [j for j in failed_jobs if 'linkedin.com' in j.get('url', '')]
     naukri_jobs = [j for j in failed_jobs if 'naukri.com' in j.get('url', '')]
 
+    # Filter based on flags
+    if linkedin_only:
+        print("🎯 Platform filter: LinkedIn Only")
+        naukri_jobs = []
+    elif naukri_only:
+        print("🎯 Platform filter: Naukri Only")
+        linkedin_jobs = []
+
     print(f"🔄 Retrying {len(linkedin_jobs)} LinkedIn and {len(naukri_jobs)} Naukri jobs.")
     
     # We will reconstruct the failed list after processing
-    still_failed = []
+    # Start with the jobs we are NOT retrying this time
+    still_failed = [j for j in failed_jobs if j not in linkedin_jobs and j not in naukri_jobs]
 
     if linkedin_jobs:
         temp_path = os.path.join(BASE_DIR, 'data', 'linkedin_matched_jobs.json')
@@ -92,4 +102,9 @@ def retry_failed_jobs():
     print(f"\n🎉 Retry complete! Recovered/Cleaned {recovered} applications. {len(still_failed)} still in failed list.")
 
 if __name__ == "__main__":
-    retry_failed_jobs()
+    parser = argparse.ArgumentParser(description="Retry failed job applications.")
+    parser.add_argument("--linkedin-only", action="store_true", help="Retry only LinkedIn jobs.")
+    parser.add_argument("--naukri-only", action="store_true", help="Retry only Naukri jobs.")
+    args = parser.parse_args()
+    
+    retry_failed_jobs(linkedin_only=args.linkedin_only, naukri_only=args.naukri_only)

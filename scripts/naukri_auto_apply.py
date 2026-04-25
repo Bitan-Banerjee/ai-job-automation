@@ -2,6 +2,8 @@ import os
 import json
 import time
 import random
+import re
+from datetime import datetime
 from playwright.sync_api import sync_playwright
 
 try:
@@ -12,8 +14,7 @@ except ImportError:
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MATCHED_PATH = os.path.join(BASE_DIR, 'data', 'matched_jobs.json')
 SESSION_FILE = os.path.join(BASE_DIR, 'data', 'naukri_session.json')
-if not REGISTRY_PATH:
-    REGISTRY_PATH = os.path.join(BASE_DIR, 'data', 'job_qa_registry.json')
+REGISTRY_PATH = os.path.join(BASE_DIR, 'data', 'naukri_qa_registry.json')
 
 
 def get_registry():
@@ -23,6 +24,23 @@ def get_registry():
 
 def save_registry(registry):
     with open(REGISTRY_PATH, 'w') as f: json.dump(registry, f, indent=4)
+
+
+def take_screenshot(page, company_name, error_type):
+    """Saves a timestamped screenshot to logs/screenshots/ for debugging."""
+    try:
+        now = datetime.now()
+        ss_dir = os.path.join(BASE_DIR, 'logs', 'screenshots', now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
+        os.makedirs(ss_dir, exist_ok=True)
+        
+        safe_company = re.sub(r'[^\w\s-]', '', company_name).strip().replace(' ', '_')
+        filename = f"{now.strftime('%H-%M-%S')}_naukri_{safe_company}_{error_type}.png"
+        path = os.path.join(ss_dir, filename)
+        
+        page.screenshot(path=path)
+        print(f"    📸 Screenshot saved: logs/screenshots/.../{filename}")
+    except Exception as e:
+        print(f"    ⚠️ Failed to take screenshot: {e}")
 
 
 def detect_form_panel(page):
@@ -108,7 +126,7 @@ def extract_questions(page):
 
 
 def answer_questions(page, questions, registry):
-    """Answer questions with dynamic UI support."""
+    """Answer questions with aggressive click logic and modern event dispatching."""
     for q in questions:
         q_text = q['question']
         options = [o['text'] for o in q.get('options', [])]
@@ -137,24 +155,20 @@ def answer_questions(page, questions, registry):
                 }
             }""", [ans])
         elif q['type'] == 'styled_radio':
+            # AGGRESSIVE CLICKING LOGIC (Verified in debug script)
             page.evaluate("""([ans]) => {
-                const findAndClick = (val) => {
-                    const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
-                    for (const r of radios) {
-                        const lbl = document.querySelector(`label[for="${r.id}"]`) || r.parentElement;
-                        if (lbl && lbl.innerText.trim().toLowerCase() === val.toLowerCase()) {
-                            r.checked = true;
-                            r.dispatchEvent(new Event('change', { bubbles: true }));
-                            r.dispatchEvent(new Event('click', { bubbles: true }));
-                            return true;
-                        }
-                    }
-                    const targets = Array.from(document.querySelectorAll('.chatbot_Drawer .chipMsg, .pill, label, .option, button, span'));
-                    const match = targets.find(t => t.innerText.trim().toLowerCase() === val.toLowerCase());
-                    if (match) { match.click(); return true; }
-                    return false;
-                };
-                findAndClick(ans);
+                const normalizedVal = ans.toLowerCase().trim();
+                const targets = Array.from(document.querySelectorAll('.chatbot_Drawer .chipMsg, .pill, label, .option, button, span, .chatbot_ListItem'));
+                const match = targets.find(t => t.innerText.trim().toLowerCase() === normalizedVal);
+                
+                if (match) {
+                    // Dispatch pointer events for modern frameworks (React/Angular)
+                    match.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}));
+                    match.dispatchEvent(new PointerEvent('pointerup', {bubbles: true}));
+                    match.click();
+                    return true;
+                }
+                return false;
             }""", [ans])
         time.sleep(1)
 
@@ -218,7 +232,8 @@ def naukri_apply(matched_path=MATCHED_PATH):
         page.set_default_timeout(60000)
 
         for job in jobs:
-            print(f"\n🚀 Processing: {job.get('company', 'Unknown')}")
+            company_name = job.get('company', 'Unknown')
+            print(f"\n🚀 Processing: {company_name}")
             try:
                 page.goto(job['url'], wait_until="domcontentloaded")
                 time.sleep(4)
@@ -232,6 +247,7 @@ def naukri_apply(matched_path=MATCHED_PATH):
                             print("  ⚠️ Job has expired. Removing from active list."); job['status'] = 'expired'
                         else:
                             print("  ❌ Apply button missing."); job['status'] = 'skipped_no_apply_btn'
+                            take_screenshot(page, company_name, "no_apply_btn")
                     else:
                         apply_btn.click()
                         print("  🔘 Clicked Apply. Waiting for Form/Bot...")
@@ -248,23 +264,28 @@ def naukri_apply(matched_path=MATCHED_PATH):
                                         print("  ✅ Application Success!"); job['status'] = 'applied'
                                     else:
                                         print("  ❓ Form vanished."); job['status'] = 'skipped_unknown_state'
+                                        take_screenshot(page, company_name, "form_vanished")
                                     break
 
                             questions = extract_questions(page)
                             if not questions:
                                 print("    ⚠️ No questions found. Waiting..."); time.sleep(4)
                                 questions = extract_questions(page); 
-                                if not questions: break
+                                if not questions: 
+                                    take_screenshot(page, company_name, "no_questions_found")
+                                    break
 
                             print(f"    📝 Step {round_num+1}: Found {len(questions)} question(s)")
                             answer_questions(page, questions, registry)
                             submit_form(page)
                         else:
                             print("  ⚠️ Max rounds."); job['status'] = 'skipped_too_many_rounds'
+                            take_screenshot(page, company_name, "max_rounds_reached")
 
             except Exception as e:
                 print(f"  ⚠️ Error: {str(e).split('\\n')[0]}")
                 job['status'] = 'error'
+                take_screenshot(page, company_name, "exception")
 
             # Update status in the matched file (Saved for EVERY branch now)
             with open(matched_path, 'w') as f: json.dump({"approved_jobs": jobs}, f, indent=4)

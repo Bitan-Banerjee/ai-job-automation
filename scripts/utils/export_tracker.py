@@ -3,7 +3,8 @@ import csv
 import os
 from datetime import datetime
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Points to the root folder (two levels up from scripts/utils/)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MATCHED_PATH = os.path.join(BASE_DIR, 'data', 'matched_jobs.json')
 OUTPUT_FILE = os.path.join(BASE_DIR, 'Job_Applications_Tracker.csv')
 

@@ -3,6 +3,7 @@ import json
 import time
 import random
 import re
+from datetime import datetime
 from playwright.sync_api import sync_playwright
 from dotenv import load_dotenv
 from google import genai
@@ -17,7 +18,7 @@ for key_name in ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"]:
 
 SESSION_FILE = os.path.join(BASE_DIR, 'data', 'linkedin_session.json')
 MATCHED_PATH = os.path.join(BASE_DIR, 'data', 'matched_jobs.json')
-REGISTRY_PATH = os.path.join(BASE_DIR, 'data', 'job_qa_registry.json')
+REGISTRY_PATH = os.path.join(BASE_DIR, 'data', 'linkedin_qa_registry.json')
 
 def get_batch_answers_from_gemini(questions_list, registry):
     if not questions_list: return {}
@@ -48,6 +49,13 @@ def get_batch_answers_from_gemini(questions_list, registry):
     - Example: "Years of experience in Azure?" -> Answer: "4".
     - Example: "Experience with Databricks?" -> Answer: "4" (mapping from Glue/PySpark).
     - NEVER output "0" for these technical skills.
+    
+    **INTERVIEW AVAILABILITY**:
+    - The candidate is available at:
+        1. Morning: Before 11:00 AM.
+        2. Afternoon: 2:00 PM - 4:30 PM.
+        3. Evening: After 7:00 PM.
+    - If asked for a preferred time slot or checkbox, pick the option that BEST fits one of these windows.
     
     **FORMATTING RULES**:
     - If the question asks for years/months and expects a number (or is a numeric field), return ONLY the integer (e.g., "4" not "4 years").
@@ -129,7 +137,12 @@ def handle_questions(page, registry):
         label = page.query_selector(f"label[for='{field.get_attribute('id')}']")
         q_text = label.inner_text().strip() if label else ""
         if q_text in registry:
-            field.fill(str(registry[q_text]))
+            ans = str(registry[q_text])
+            if field.get_attribute('type') == 'number':
+                # Strip everything except digits and a single decimal point
+                ans = re.sub(r'[^\d.]', '', ans)
+                if not ans: ans = "0"
+            field.fill(ans)
             time.sleep(0.5)
             # Attempt to click autocomplete suggestions (Mandatory for LinkedIn Location fields)
             try:
@@ -164,6 +177,22 @@ def handle_questions(page, registry):
                             lbl.click()
                             break
 
+def take_screenshot(page, company_name, error_type):
+    """Saves a timestamped screenshot to logs/screenshots/ for debugging."""
+    try:
+        now = datetime.now()
+        ss_dir = os.path.join(BASE_DIR, 'logs', 'screenshots', now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
+        os.makedirs(ss_dir, exist_ok=True)
+        
+        safe_company = re.sub(r'[^\w\s-]', '', company_name).strip().replace(' ', '_')
+        filename = f"{now.strftime('%H-%M-%S')}_{safe_company}_{error_type}.png"
+        path = os.path.join(ss_dir, filename)
+        
+        page.screenshot(path=path)
+        print(f"    📸 Screenshot saved: logs/screenshots/.../{filename}")
+    except Exception as e:
+        print(f"    ⚠️ Failed to take screenshot: {e}")
+
 def auto_apply(matched_path=MATCHED_PATH):
     if not os.path.exists(REGISTRY_PATH): return
     with open(REGISTRY_PATH, 'r') as f: registry = json.load(f)
@@ -180,8 +209,9 @@ def auto_apply(matched_path=MATCHED_PATH):
         page.set_default_timeout(60000)
 
         for job in jobs:
+            company_name = job.get('company', 'Unknown')
             score = job.get('ai_score', 0)
-            print(f"\n🚀 Processing: {job.get('company', 'Unknown')} (Score: {score})")
+            print(f"\n🚀 Processing: {company_name} (Score: {score})")
             if score < 80:
                 print(f"  ⏭️  Skipping: AI Score is below the 80 threshold.")
                 job['status'] = 'skipped_low_score'
@@ -191,6 +221,7 @@ def auto_apply(matched_path=MATCHED_PATH):
                 page.goto(job['url'], wait_until="domcontentloaded")
             except Exception as e:
                 print(f"  ⚠️ Navigation failed: {e}")
+                take_screenshot(page, company_name, "navigation_failed")
                 continue
             
             time.sleep(random.uniform(2, 4))
@@ -199,8 +230,14 @@ def auto_apply(matched_path=MATCHED_PATH):
 
             try:
                 if page.locator("button:has-text('Applied')").is_visible(timeout=2000):
-                    print(f"  ✅ Already applied to {job['company']}. Skipping.")
+                    print(f"  ✅ Already applied to {company_name}. Skipping.")
                     continue
+            except: pass
+
+            try:
+                # Close the messaging drawer if it's open and blocking UI
+                if page.locator(".msg-overlay-bubble-header__control--close-btn").is_visible(timeout=1000):
+                    page.locator(".msg-overlay-bubble-header__control--close-btn").click()
             except: pass
 
             button_clicked = False
@@ -239,13 +276,15 @@ def auto_apply(matched_path=MATCHED_PATH):
 
             if not button_clicked:
                 print(f"  ❌ Easy Apply button genuinely not found. Moving on.")
+                take_screenshot(page, company_name, "no_apply_button")
                 continue
 
             # Wait for the modal to actually appear before starting the interaction loop
             try:
-                page.locator(".artdeco-modal").first.wait_for(state="visible", timeout=8000)
+                page.locator(".artdeco-modal").first.wait_for(state="visible", timeout=12000)
             except Exception:
                 print("  ⚠️ Modal did not appear (might be an external redirect or slow connection). Skipping.")
+                take_screenshot(page, company_name, "modal_timeout")
                 continue
 
             for loop_count in range(10):
@@ -255,6 +294,7 @@ def auto_apply(matched_path=MATCHED_PATH):
                 if not modal.is_visible():
                     if loop_count > 0:
                         print("  ⚠️ Modal closed unexpectedly.")
+                        take_screenshot(page, company_name, "modal_closed_early")
                     break
                     
                 handle_questions(page, registry)
@@ -271,6 +311,7 @@ def auto_apply(matched_path=MATCHED_PATH):
                 
                 if modal.locator(".artdeco-inline-feedback--error").count() > 0:
                     print("  ⚠️ Form validation failing. Skipping job to avoid infinite loop.")
+                    take_screenshot(page, company_name, "form_validation_error")
                     break
 
                 # Scroll down the modal content to ensure Next/Submit buttons are visible
@@ -291,7 +332,7 @@ def auto_apply(matched_path=MATCHED_PATH):
                 submit_btn = modal.locator("button:has-text('Submit application')").first
 
                 if submit_btn.is_visible():
-                    print(f"  🏁 Finalizing application for {job['company']}...")
+                    print(f"  🏁 Finalizing application for {company_name}...")
                     submit_btn.click(force=True)
                     time.sleep(3)
                     print(f"  ✅ SUCCESS! Application fully submitted.")
@@ -307,7 +348,10 @@ def auto_apply(matched_path=MATCHED_PATH):
                     print("    ➡️ Clicked 'Next'")
                 else:
                     print("  ⚠️ Could not find Next/Review/Submit buttons. Exiting modal.")
+                    take_screenshot(page, company_name, "no_modal_buttons")
                     break
+
+        browser.close()
 
         browser.close()
 

@@ -8,6 +8,10 @@ from datetime import datetime
 import atexit
 import signal
 
+# --- GLOBAL CONFIG & PATHS ---
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOCK_FILE = os.path.join(BASE_DIR, "app.lock")
+
 try:
     from linkedin_scraper import scrape_linkedin_jobs
     from naukri_scraper import scrape_naukri_jobs
@@ -21,8 +25,6 @@ except ImportError as e:
     sys.exit(1)
 
 # --- SINGLETON LOCK LOGIC ---
-LOCK_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.lock")
-
 def acquire_lock():
     """Ensure only one instance of the script runs at a time."""
     if os.path.exists(LOCK_FILE):
@@ -57,9 +59,8 @@ signal.signal(signal.SIGINT, signal_handler)
 
 def inject_logs_to_context():
     """Automatically injects the last 50 lines of the run log into the AI's memory on exit."""
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    latest_log_path = os.path.join(base_dir, "latest_run.md")
-    context_path = os.path.join(base_dir, "AI_CONTEXT.md")
+    latest_log_path = os.path.join(BASE_DIR, "latest_run.md")
+    context_path = os.path.join(BASE_DIR, "AI_CONTEXT.md")
     
     if not os.path.exists(latest_log_path) or not os.path.exists(context_path):
         return
@@ -108,16 +109,15 @@ class TeeLogger(object):
             f.flush()
 
 def setup_logging():
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     now = datetime.now()
     
     # 1. Setup daily archive log
-    log_dir = os.path.join(base_dir, 'logs', now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
+    log_dir = os.path.join(BASE_DIR, 'logs', now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
     os.makedirs(log_dir, exist_ok=True)
     log_filename = os.path.join(log_dir, f"run_{now.strftime('%H-%M-%S')}.log")
     
     # 2. Setup a static Markdown mirror for the AI context
-    latest_filename = os.path.join(base_dir, "latest_run.md")
+    latest_filename = os.path.join(BASE_DIR, "latest_run.md")
     with open(latest_filename, "w", encoding="utf-8") as f:
         f.write(f"# Pipeline Run: {now.strftime('%Y-%m-%d %H:%M:%S')}\n\n```text\n")
         
@@ -129,8 +129,7 @@ def setup_logging():
     return log_filename
 
 def get_todays_application_count():
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tracker_path = os.path.join(base_dir, 'Job_Applications_Tracker.csv')
+    tracker_path = os.path.join(BASE_DIR, 'Job_Applications_Tracker.csv')
     if not os.path.exists(tracker_path):
         return 0
         
@@ -154,10 +153,10 @@ def get_todays_application_count():
         pass
     return count
 
-def quarantine_failed_jobs(base_dir):
-    failed_path = os.path.join(base_dir, 'data', 'failed_applications.json')
+def quarantine_failed_jobs():
+    failed_path = os.path.join(BASE_DIR, 'data', 'failed_applications.json')
     for prefix in ['linkedin', 'naukri']:
-        matched_path = os.path.join(base_dir, 'data', f'{prefix}_matched_jobs.json')
+        matched_path = os.path.join(BASE_DIR, 'data', f'{prefix}_matched_jobs.json')
         if os.path.exists(matched_path) and os.path.getsize(matched_path) > 0:
             try:
                 with open(matched_path, 'r') as f:
@@ -189,13 +188,12 @@ def quarantine_failed_jobs(base_dir):
             except Exception as e:
                 print(f"  ⚠️ Failed to quarantine {prefix} jobs: {e}")
 
-def run_daily_quota_loop(target_quota=50, max_loops=4):
+def run_daily_quota_loop(target_quota=50, max_loops=4, linkedin_only=False, naukri_only=False):
     print(f"\n🎯 DAILY QUOTA MODE ACTIVATED: Target {target_quota} Applications")
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
     # Reset Naukri page state for a fresh daily run
-    naukri_state_path = os.path.join(base_dir, 'data', 'naukri_state.json')
-    if os.path.exists(naukri_state_path):
+    naukri_state_path = os.path.join(BASE_DIR, 'data', 'naukri_state.json')
+    if os.path.exists(naukri_state_path) and not linkedin_only:
         os.remove(naukri_state_path)
         print("🧹 Reset Naukri page state for fresh run.")
 
@@ -213,53 +211,54 @@ def run_daily_quota_loop(target_quota=50, max_loops=4):
         
         print(f"\n🔄 --- PIPELINE LOOP {attempt}/{max_loops} (Attempting to find {remaining} more matches) ---")
         
-        # Quarantine failed/skipped applications before wiping
-        quarantine_failed_jobs(base_dir)
-        
-        # Check quota again
-        current_count = get_todays_application_count()
-        if current_count >= target_quota:
-            print("✅ Daily quota met! Shutting down gracefully.")
-            break
-            
-        remaining = target_quota - current_count
-        jobs_to_scrape = min(remaining * 8, 150)
-
-        # Wipe intermediate files to start fresh, but keep seen_jobs.json and naukri_state.json
-        for prefix in ['linkedin', 'naukri']:
-            for suffix in ['_jobs.json', '_matched_jobs.json']:
-                f_path = os.path.join(base_dir, 'data', f"{prefix}{suffix}")
-                if os.path.exists(f_path):
-                    os.remove(f_path)
-        
-        # Run Naukri Pipeline
-        naukri_success = run_naukri_pipeline(max_jobs=jobs_to_scrape, start_stage=1)
+        # 1. RUN PIPELINES (These functions now handle their own export_to_excel calls)
+        naukri_success = True
+        if not linkedin_only:
+            naukri_success = run_naukri_pipeline(max_jobs=jobs_to_scrape, start_stage=1)
         
         # Run LinkedIn Pipeline ONLY on Loop 1
-        if attempt == 1:
+        if attempt == 1 and not naukri_only:
             current_count = get_todays_application_count()
             if current_count < target_quota:
                 remaining = target_quota - current_count
                 jobs_to_scrape = min(remaining * 8, 150)
                 run_linkedin_pipeline(max_jobs=jobs_to_scrape, start_stage=1)
-        else:
+        elif not naukri_only:
             print("⏭️ Skipping LinkedIn scraping for loop > 1.")
         
-        if not naukri_success and (attempt > 1 or not linkedin_success):
-            print("⚠️ Pipeline encountered errors. Resting for 60s before next attempt...")
-            time.sleep(60)
+        # 2. QUARANTINE FAILURES FROM THIS LOOP
+        # We do this BEFORE wiping so we don't lose jobs that hit errors
+        quarantine_failed_jobs()
+
+        # 3. WIPE INTERMEDIATE FILES FOR NEXT LOOP
+        # Only wipe if we aren't on the final loop, to keep data for debugging
+        if attempt < max_loops:
+            for prefix in ['linkedin', 'naukri']:
+                for suffix in ['_jobs.json', '_matched_jobs.json']:
+                    f_path = os.path.join(BASE_DIR, 'data', f"{prefix}{suffix}")
+                    if os.path.exists(f_path):
+                        os.remove(f_path)
+        
+        # Check if we should rest
+        current_count = get_todays_application_count()
+        if current_count < target_quota:
+            if not naukri_success:
+                print("⚠️ Pipeline encountered errors. Resting for 60s...")
+                time.sleep(60)
+            else:
+                print("🔄 Loop complete. Continuing immediately...")
+
     else:
         print(f"\n⚠️ Reached max loops ({max_loops}). Did not hit quota. Resting until tomorrow.")
         
     print("\n📥 Quarantining any remaining failed applications from the final loop...")
-    quarantine_failed_jobs(base_dir)
+    quarantine_failed_jobs()
     
     print("\n🧹 Final cleanup complete. (Retry logic decoupled. Run 'retry_failed.py' manually if needed.)")
 
 def determine_start_stage(prefix="linkedin"):
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    jobs_path = os.path.join(base_dir, 'data', f'{prefix}_jobs.json')
-    matched_path = os.path.join(base_dir, 'data', f'{prefix}_matched_jobs.json')
+    jobs_path = os.path.join(BASE_DIR, 'data', f'{prefix}_jobs.json')
+    matched_path = os.path.join(BASE_DIR, 'data', f'{prefix}_matched_jobs.json')
     
     if os.path.exists(matched_path):
         try:
@@ -284,9 +283,8 @@ def run_linkedin_pipeline(max_jobs=25, start_stage=1):
     print(f"📍 Starting from STAGE {start_stage}")
     print("=" * 50)
     
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    scraped_path = os.path.join(base_dir, 'data', 'linkedin_jobs.json')
-    matched_path = os.path.join(base_dir, 'data', 'linkedin_matched_jobs.json')
+    scraped_path = os.path.join(BASE_DIR, 'data', 'linkedin_jobs.json')
+    matched_path = os.path.join(BASE_DIR, 'data', 'linkedin_matched_jobs.json')
     
     if start_stage <= 1:
         try:
@@ -348,9 +346,8 @@ def run_naukri_pipeline(max_jobs=25, start_stage=1):
     print(f"📍 Starting from STAGE {start_stage}")
     print("=" * 50)
     
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    scraped_path = os.path.join(base_dir, 'data', 'naukri_jobs.json')
-    matched_path = os.path.join(base_dir, 'data', 'naukri_matched_jobs.json')
+    scraped_path = os.path.join(BASE_DIR, 'data', 'naukri_jobs.json')
+    matched_path = os.path.join(BASE_DIR, 'data', 'naukri_matched_jobs.json')
     
     if start_stage <= 1:
         try:
@@ -400,6 +397,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-loops", type=int, default=4, help="Maximum number of loop iterations.")
     parser.add_argument("--resume", action="store_true", help="Auto-detect where the pipeline left off and resume.")
     parser.add_argument("--start-stage", type=int, default=1, choices=[1, 2, 3, 4, 5], help="Manually force the pipeline to start at a specific stage (1-5).")
+    parser.add_argument("--linkedin-only", action="store_true", help="Run only the LinkedIn pipeline.")
+    parser.add_argument("--naukri-only", action="store_true", help="Run only the Naukri pipeline.")
     args = parser.parse_args()
     
     log_file = setup_logging()
@@ -409,15 +408,19 @@ if __name__ == "__main__":
         if args.resume:
             l_stage = determine_start_stage("linkedin")
             n_stage = determine_start_stage("naukri")
-            if l_stage < 5:
+            if l_stage < 5 and not args.naukri_only:
                 print(f"🔍 Resume flag detected. Starting LinkedIn at stage: {l_stage}")
                 run_linkedin_pipeline(max_jobs=args.jobs, start_stage=l_stage)
-            if n_stage < 5:
+            if n_stage < 5 and not args.linkedin_only:
                 print(f"🔍 Resume flag detected. Starting Naukri at stage: {n_stage}")
                 run_naukri_pipeline(max_jobs=args.jobs, start_stage=n_stage)
         else:
-            run_linkedin_pipeline(max_jobs=args.jobs, start_stage=args.start_stage)
-            run_naukri_pipeline(max_jobs=args.jobs, start_stage=args.start_stage)
+            if not args.naukri_only:
+                run_linkedin_pipeline(max_jobs=args.jobs, start_stage=args.start_stage)
+            if not args.linkedin_only:
+                run_naukri_pipeline(max_jobs=args.jobs, start_stage=args.start_stage)
     else:
         # Default behavior: run the daily quota goal-oriented loop
-        run_daily_quota_loop(target_quota=args.target, max_loops=args.max_loops)
+        # Pass platform filters to the quota loop
+        run_daily_quota_loop(target_quota=args.target, max_loops=args.max_loops, 
+                             linkedin_only=args.linkedin_only, naukri_only=args.naukri_only)
