@@ -84,27 +84,34 @@ def extract_questions(page):
             }
         }
 
-        // 2. INPUTS (Priority: Chatbot text area)
-        const chatInput = drawer.querySelector('.textArea, [contenteditable="true"], input:not([type="hidden"]), textarea');
-        if (chatbotQuestion && chatInput) {
+        // 2. PILLS/OPTIONS (Only look near the end of the conversation to avoid stale options)
+        const allItems = Array.from(drawer.querySelectorAll('.chatbot_ListItem, .chatbot_MessageContainer > div'));
+        const lastFewItems = allItems.slice(-3); 
+        let options = [];
+        lastFewItems.forEach(item => {
+            const found = Array.from(item.querySelectorAll('.chipMsg, .pill, .option, [class*="chip" i], [class*="pill" i], label, .ssrc__label, .optionVal, .chatbot_Chip'))
+                .map(o => o.innerText.trim())
+                .filter(t => t.length > 0 && t.length < 50 && t !== chatbotQuestion && !t.includes('Save') && !t.includes('Type here'));
+            found.forEach(f => { if(!options.includes(f)) options.push(f); });
+        });
+
+        if (chatbotQuestion && options.length > 0) {
             questions.push({
                 question: chatbotQuestion,
-                type: chatInput.tagName === 'INPUT' || chatInput.tagName === 'TEXTAREA' ? 'text' : 'contenteditable',
-                options: [],
+                type: 'styled_radio',
+                options: options.map(o => ({ value: o, text: o })),
                 index: 0
             });
         }
 
-        // 3. PILLS/OPTIONS (If no text input)
+        // 3. INPUTS (If no pills)
         if (questions.length === 0 && chatbotQuestion) {
-            const options = Array.from(drawer.querySelectorAll('.chipMsg, .pill, .option, [class*="chip" i], [class*="pill" i], label'))
-                .map(o => o.innerText.trim())
-                .filter(t => t.length > 0 && t.length < 50 && t !== chatbotQuestion && !t.includes('Save'));
-            if (options.length > 0) {
+            const chatInput = drawer.querySelector('.textArea, [contenteditable="true"], input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]), textarea');
+            if (chatInput) {
                 questions.push({
                     question: chatbotQuestion,
-                    type: 'styled_radio',
-                    options: options.map(o => ({ value: o, text: o })),
+                    type: chatInput.tagName === 'INPUT' || chatInput.tagName === 'TEXTAREA' ? 'text' : 'contenteditable',
+                    options: [],
                     index: 0
                 });
             }
@@ -144,54 +151,131 @@ def answer_questions(page, questions, registry):
         print(f"    💡 Answer: {ans}")
 
         if q['type'] in ('text', 'contenteditable'):
-            page.evaluate("""([ans]) => {
-                const input = document.querySelector('.textArea, [contenteditable="true"], .chatbot_Drawer input, .chatbot_Drawer textarea');
-                if (input) {
-                    input.focus();
-                    if (input.tagName === 'INPUT' || input.tagName === 'TEXTAREA') { input.value = ans; }
-                    else { input.innerText = ans; }
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-            }""", [ans])
+            # Use Playwright's native typing for better reliability
+            input_locator = page.locator('.textArea, [contenteditable="true"], .chatbot_Drawer input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]), .chatbot_Drawer textarea').first
+            if input_locator.is_visible():
+                input_locator.click()
+                time.sleep(0.5)
+                # Clear existing text
+                page.keyboard.press("Control+A")
+                page.keyboard.press("Backspace")
+                page.keyboard.type(ans, delay=50)
+                time.sleep(0.5)
+                # Dispatch events as fallback
+                page.evaluate("""([ans]) => {
+                    const input = document.querySelector('.textArea, [contenteditable="true"], .chatbot_Drawer input, .chatbot_Drawer textarea');
+                    if (input) {
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }""", [ans])
         elif q['type'] == 'styled_radio':
-            # AGGRESSIVE CLICKING LOGIC (Verified in debug script)
+            # AGGRESSIVE CLICKING LOGIC (Verified for TCS/Wipro circle radios)
             page.evaluate("""([ans]) => {
                 const normalizedVal = ans.toLowerCase().trim();
-                const targets = Array.from(document.querySelectorAll('.chatbot_Drawer .chipMsg, .pill, label, .option, button, span, .chatbot_ListItem'));
-                const match = targets.find(t => t.innerText.trim().toLowerCase() === normalizedVal);
+                const drawer = document.querySelector('.chatbot_DrawerContentWrapper');
+                
+                // Priority list of selectors for options
+                const selectors = ['.ssrc__label', '.chipMsg', '.pill', 'label', '.option', 'button', 'span', '.chatbot_ListItem', '.chatbot_Chip', '.optionVal', '.singleselect-radiobutton-container div'];
+                const targets = Array.from(drawer.querySelectorAll(selectors.join(',')));
+                
+                // Fuzzy matching: Exact match or includes
+                const match = targets.find(t => {
+                    const text = t.innerText.trim().toLowerCase();
+                    if (!text) return false;
+                    return text === normalizedVal || text.includes(normalizedVal) || normalizedVal.includes(text);
+                });
                 
                 if (match) {
-                    // Dispatch pointer events for modern frameworks (React/Angular)
-                    match.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}));
-                    match.dispatchEvent(new PointerEvent('pointerup', {bubbles: true}));
-                    match.click();
+                    match.scrollIntoView({behavior: 'instant', block: 'center', inline: 'nearest'});
+                    
+                    // Force drawer scroll if match still hidden
+                    const drawerContainer = document.querySelector('.chatbot_DrawerContentWrapper') || drawer;
+                    if (drawerContainer) {
+                        const rect = match.getBoundingClientRect();
+                        const containerRect = drawerContainer.getBoundingClientRect();
+                        if (rect.bottom > containerRect.bottom || rect.top < containerRect.top) {
+                            match.scrollIntoView();
+                        }
+                    }
+                    
+                    // 1. Try to find and click actual radio input
+                    const container = match.closest('li, div, label') || match.parentElement;
+                    const radio = container.querySelector('input[type="radio"], input[type="checkbox"], .ssrc__radio');
+                    
+                    if (radio) {
+                        radio.checked = true;
+                        // Sequence of events to trigger React/Angular listeners
+                        radio.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                        radio.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+                        radio.click();
+                        radio.dispatchEvent(new Event('change', {bubbles: true}));
+                    } else {
+                        // 2. Click the text element itself with events
+                        match.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                        match.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+                        match.click();
+                    }
                     return true;
                 }
                 return false;
             }""", [ans])
-        time.sleep(1)
+        time.sleep(3) # Increase wait for bot state sync
 
 
 def submit_form(page):
-    """Submit current step."""
+    """Submit current step with enhanced state checking."""
     try:
-        btn = page.locator(".sendMsg, .sendMsgbtn_container, .chatBot-ic-send, button:has-text('Save'), button:has-text('Submit'), button:has-text('Next'), button:has-text('Apply')").last
-        btn.click(force=True)
-        print("    📨 Clicked Save/Submit")
-        time.sleep(4)
-        return True
-    except: return False
+        # Target the container or the button itself
+        save_btn = page.locator(".sendMsgbtn_container .send, button:has-text('Save'), button:has-text('Submit'), button:has-text('Next'), button:has-text('Apply'), .chatBot-ic-send").last
+        
+        if not save_btn.is_visible(timeout=3000):
+            print("    ℹ️ No Save button visible. Chatbot might have auto-submitted.")
+            return True
+
+        is_disabled = page.evaluate("""(el) => {
+            if (!el) return false;
+            return el.classList.contains('disabled') || el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true';
+        }""", save_btn.element_handle())
+        
+        if not is_disabled:
+            save_btn.click(force=True)
+            print("    📨 Clicked Save/Submit")
+            time.sleep(4)
+            return True
+        else:
+            print("    ⚠️ Save button is DISABLED. Trying to click child .sendMsg or pressing Enter.")
+            inner_send = save_btn.locator(".sendMsg")
+            if inner_send.count() > 0:
+                inner_send.click(force=True)
+                print("    📨 Clicked inner .sendMsg")
+                time.sleep(4)
+                return True
+            else:
+                page.keyboard.press("Enter")
+                time.sleep(4)
+                return True
+    except Exception as e:
+        print(f"    ⚠️ Submit failed: {e}")
+        return False
 
 
 def check_success(page):
     """Comprehensive success verification."""
-    keys = ["successfully applied", "application submitted", "applied successfully", "already applied", "thank you for showing interest", "application sent", "applied on", "applied today"]
+    keys = [
+        "successfully applied", "application submitted", "applied successfully", 
+        "already applied", "thank you for showing interest", "application sent", 
+        "applied on", "applied today", "thank you for applying", "all the best",
+        "recruiter will get back to you", "interest has been sent"
+    ]
     body = page.evaluate("() => document.body.innerText.toLowerCase()")
     if any(k in body for k in keys): return True
     
-    applied_btn = page.locator("button:has-text('Applied'), [class*='applied' i]").first
-    return applied_btn.is_visible(timeout=3000)
+    # Check for buttons that indicate already applied state
+    applied_btn = page.locator("button:has-text('Applied'), [class*='applied' i], .applied-btn").first
+    if applied_btn.count() > 0:
+        return applied_btn.is_visible(timeout=3000)
+    return False
 
 
 def is_expired(page):
@@ -249,14 +333,41 @@ def naukri_apply(matched_path=MATCHED_PATH):
                             print("  ❌ Apply button missing."); job['status'] = 'skipped_no_apply_btn'
                             take_screenshot(page, company_name, "no_apply_btn")
                     else:
-                        apply_btn.click()
+                        # SUPER SELECTOR for Apply button
+                        apply_btn = page.locator("button:has-text('Apply'), .applyBtn, .apply-button, #apply-button, [class*='apply' i], button:has-text('Register to apply')").first
+                        
+                        if not apply_btn.is_visible(timeout=5000):
+                             print("  ❌ Apply button STILL missing after retry."); job['status'] = 'skipped_no_apply_btn'
+                             take_screenshot(page, company_name, "no_apply_btn_final")
+                             continue
+
+                        apply_btn.scroll_into_view_if_needed()
+                        # Real click via JS + Mouse events
+                        page.evaluate("(el) => { el.dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); el.click(); }", apply_btn.element_handle())
                         print("  🔘 Clicked Apply. Waiting for Form/Bot...")
                         time.sleep(8)
+                        
+                        # Check for new tab (Company site apply)
+                        pages = context.pages
+                        if len(pages) > 2:
+                             print("  ⚠️ New tab detected. Company site apply. Skipping.")
+                             job['status'] = 'skipped_external_site'
+                             pages[-1].close()
+                             continue
+
+                        # Fallback if drawer didn't open
+                        if not detect_form_panel(page):
+                            print("  ⚠️ Drawer didn't open. Trying aggressive re-click...")
+                            page.evaluate("(el) => { el.click(); }", apply_btn.element_handle())
+                            time.sleep(8)
 
                         for round_num in range(15):
                             if check_success(page):
                                 print("  ✅ Application Success!"); job['status'] = 'applied'; break
                             
+                            # TAKE SCREENSHOT EVERY ROUND FOR DEBUGGING
+                            take_screenshot(page, company_name, f"round_{round_num+1}")
+
                             if not detect_form_panel(page):
                                 time.sleep(4)
                                 if not detect_form_panel(page):

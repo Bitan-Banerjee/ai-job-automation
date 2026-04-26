@@ -20,6 +20,7 @@ try:
     from naukri_auto_apply import naukri_apply
     from tailor_resume import tailor_resumes
     from utils.export_tracker import export_to_excel
+    from utils.naukri_resume_uploader import upload_resume
 except ImportError as e:
     print(f"❌ Failed to import a necessary script. Make sure all scripts are in the /scripts folder. Error: {e}")
     sys.exit(1)
@@ -214,7 +215,8 @@ def run_daily_quota_loop(target_quota=50, max_loops=4, linkedin_only=False, nauk
         # 1. RUN PIPELINES (These functions now handle their own export_to_excel calls)
         naukri_success = True
         if not linkedin_only:
-            naukri_success = run_naukri_pipeline(max_jobs=jobs_to_scrape, start_stage=1)
+            # Refresh profile ONLY on the first attempt
+            naukri_success = run_naukri_pipeline(max_jobs=jobs_to_scrape, start_stage=1, refresh_profile=(attempt==1))
         
         # Run LinkedIn Pipeline ONLY on Loop 1
         if attempt == 1 and not naukri_only:
@@ -340,7 +342,7 @@ def run_linkedin_pipeline(max_jobs=25, start_stage=1):
             
     return True
 
-def run_naukri_pipeline(max_jobs=25, start_stage=1):
+def run_naukri_pipeline(max_jobs=25, start_stage=1, refresh_profile=True):
     print("\n" + "="*50)
     print("🚀🚀🚀 STARTING NAUKRI PIPELINE 🚀🚀🚀")
     print(f"📍 Starting from STAGE {start_stage}")
@@ -349,6 +351,19 @@ def run_naukri_pipeline(max_jobs=25, start_stage=1):
     scraped_path = os.path.join(BASE_DIR, 'data', 'naukri_jobs.json')
     matched_path = os.path.join(BASE_DIR, 'data', 'naukri_matched_jobs.json')
     
+    # [STAGE 0] Profile Optimization (Upload Resume)
+    if start_stage <= 1 and refresh_profile:
+        try:
+            print("\n[STAGE 0/4] ⚡ Refreshing Naukri profile (Uploading resume)...")
+            success = upload_resume()
+            if success:
+                print("[STAGE 0/4] ✅ Profile refreshed.")
+            else:
+                print("[STAGE 0/4] ⚠️ Profile refresh skipped or failed. Continuing...")
+            time.sleep(2)
+        except Exception as e:
+            print(f"\n[WARNING] ⚠️ Naukri Profile refresh failed: {e}. Continuing...")
+
     if start_stage <= 1:
         try:
             print("\n[STAGE 1/4] 🌐 Scraping fresh jobs from Naukri...")
