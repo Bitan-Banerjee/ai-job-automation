@@ -7,7 +7,7 @@ from playwright.sync_api import sync_playwright
 
 # Add scripts dir to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from auto_apply import get_batch_answers_from_gemini
+from linkedin_auto_apply import get_batch_answers_from_gemini
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SESSION_FILE = os.path.join(BASE_DIR, 'data', 'naukri_session.json')
