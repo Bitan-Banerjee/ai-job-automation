@@ -4,8 +4,16 @@ import time
 import random
 import re
 import argparse
+import sys
 from datetime import datetime
 from playwright.sync_api import sync_playwright
+
+# Add auth helper
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'utils'))
+try:
+    from auth_helper import ensure_naukri_session
+except ImportError:
+    def ensure_naukri_session(page, context): return True
 
 try:
     from linkedin_scraper import is_title_relevant, human_delay, safe_goto
@@ -25,10 +33,9 @@ def scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=25, o
     if os.path.exists(SEEN_JOBS_FILE):
         with open(SEEN_JOBS_FILE, "r") as f:
             seen_jobs = json.load(f)
-            
-    seen_roles = set((v.get('company'), v.get('title')) for v in seen_jobs.values())
-    
+
     company_behavior = {}
+
     if os.path.exists(COMPANY_BEHAVIOR_FILE):
         with open(COMPANY_BEHAVIOR_FILE, "r") as f:
             company_behavior = json.load(f)
@@ -58,18 +65,10 @@ def scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=25, o
         page = context.new_page()
         page.set_default_timeout(60000)
         
-        # Handle Naukri Login if session is dead
-        print("🌐 Checking Naukri session...")
-        safe_goto(page, "https://www.naukri.com/nlogin/login")
-        human_delay(2, 4)
-        
-        if page.locator("#usernameField").is_visible():
-            print("🔐 Session expired or missing. Please log in manually in the browser window within the next 120 seconds...")
-            # We pause the script to let you manually type your credentials and pass CAPTCHA
-            page.wait_for_url("**/mnjuser/**", timeout=120000)
-            print("✅ Login detected! Saving session...")
-            with open(SESSION_FILE, "w") as f:
-                json.dump(context.cookies(), f)
+        # --- SESSION VALIDATION ---
+        if not ensure_naukri_session(page, context):
+            print("🛑 Could not establish valid Naukri session. Scraping will continue but may fail to extract descriptions.")
+        # --------------------------
 
         formatted_keyword = keyword.lower().replace(' ', '-')
         formatted_location = location.lower().replace(' ', '-')
@@ -126,8 +125,8 @@ def scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=25, o
                 if not href: continue
                 
                 job_url = href.split("?")[0]
-                if job_url in seen_jobs or (company, title) in seen_roles:
-                    print(f"  ⏭️ Skipped: Already seen or duplicate {title} at {company}")
+                if job_url in seen_jobs:
+                    print(f"  ⏭️ Skipped: Already seen {title} at {company}")
                     continue
                     
                 job_links.append({"title": title, "company": company, "url": job_url})
@@ -171,7 +170,6 @@ def scrape_naukri_jobs(keyword="Data Engineer", location="India", max_jobs=25, o
                     })
                     
                     seen_jobs[job_info['url']] = {"title": job_info['title'], "company": job_info['company'], "seen_at": datetime.now().isoformat()}
-                    seen_roles.add((job_info['company'], job_info['title']))
                     print(f"  ✅ Scraped: {job_info['title']} at {job_info['company']}")
                 except Exception as e:
                     error_msg = str(e).split('\n')[0]
