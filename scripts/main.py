@@ -16,7 +16,7 @@ try:
     from linkedin_scraper import scrape_linkedin_jobs
     from naukri_scraper import scrape_naukri_jobs
     from match_job_gemini import match_jobs_batched
-    from auto_apply import auto_apply
+    from linkedin_auto_apply import linkedin_apply as auto_apply
     from naukri_auto_apply import naukri_apply
     from tailor_resume import tailor_resumes
     from utils.export_tracker import export_to_excel
@@ -390,6 +390,8 @@ def run_naukri_pipeline(max_jobs=25, start_stage=1, refresh_profile=True):
             naukri_apply(matched_path=matched_path)
             print("[STAGE 3/4] ✅ Auto-Applying complete.")
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"\n[CRITICAL FAILURE] 🔥 Naukri Pipeline failed at STAGE 3: APPLYING.\n  └─ Error: {e}")
             return False
 

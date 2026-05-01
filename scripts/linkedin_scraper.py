@@ -90,11 +90,9 @@ def slow_scroll(page, scrolls=10):
 
 def scrape_linkedin_jobs(keyword, location, max_pages, max_jobs, output_file=JOBS_FILE):
     seen_jobs = load_seen_jobs()
-    
-    # Create a set of (company, title) to prevent applying to identical roles posted in multiple cities
-    seen_roles = set((v.get('company'), v.get('title')) for v in seen_jobs.values())
-    
+
     with sync_playwright() as p:
+
         browser = p.chromium.launch(headless=False)
         context = browser.new_context(
             viewport={'width': 1440, 'height': 900}, # Force desktop layout
@@ -165,10 +163,6 @@ def scrape_linkedin_jobs(keyword, location, max_pages, max_jobs, output_file=JOB
                     if job_url in seen_jobs:
                         print(f"  ⏭️ Skipped: Already seen {title} at {company}")
                         continue
-                        
-                    if (company, title) in seen_roles:
-                        print(f"  ⏭️ Skipped: Duplicate role spam {title} at {company}")
-                        continue
                     
                     card.scroll_into_view_if_needed()
                     card.click()
@@ -209,7 +203,6 @@ def scrape_linkedin_jobs(keyword, location, max_pages, max_jobs, output_file=JOB
                     })
                     
                     seen_jobs[job_url] = {"title": title, "company": company, "seen_at": datetime.now().isoformat()}
-                    seen_roles.add((company, title))
                     print(f"  ✅ Scraped: {title} at {company}")
                 except Exception as e:
                     error_msg = str(e).split('\n')[0]

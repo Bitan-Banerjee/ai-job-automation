@@ -2,7 +2,7 @@ import os
 import json
 import re
 import argparse
-from auto_apply import auto_apply
+from linkedin_auto_apply import linkedin_apply as auto_apply
 from naukri_auto_apply import naukri_apply
 from utils.export_tracker import export_to_excel
 

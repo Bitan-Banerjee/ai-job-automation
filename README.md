@@ -145,12 +145,13 @@ To run the bot completely hands-free every morning at 9:00 AM, add this to your 
 
 ```text
 AiAutomation/
+├── context/                    # AI Memory (GEMINI.md, AI_CONTEXT.md, Troubleshooting)
 ├── scripts/
 │   ├── main.py                 # Master Orchestrator & Looping Agent
 │   ├── linkedin_scraper.py     # Playwright Sourcing
 │   ├── match_job_gemini.py     # AI Dealbreaker Filtering
 │   ├── tailor_resume.py        # PDF Generation
-│   ├── auto_apply.py           # Playwright Application Submitter
+│   ├── linkedin_auto_apply.py  # Playwright Application Submitter
 │   ├── export_tracker.py       # CSV Database Writer
 │   └── update_registry.py      # Setup script for QA memory
 ├── config/
